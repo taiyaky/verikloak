@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2025-08-24
+
+### Changed
+
+- Updated dependency constraints in gemspec (`json` ~> 2.6, `jwt` ~> 2.7) for better compatibility control
+- Updated README badges (Gem version, Ruby version, downloads)
+
+---
+
 ## [0.1.0] - 2025-08-17
 
 ### Added
