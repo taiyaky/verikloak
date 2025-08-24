@@ -1,0 +1,129 @@
+name: CI
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  rspec:
+    name: RSpec
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Compose Build (no cache)
+        run: docker compose build --no-cache --pull
+
+      - name: Run RSpec with coverage and JUnit output
+        run: |
+          mkdir -p tmp/coverage tmp/rspec
+          docker compose run --rm -u 0:0 dev \
+            bash -c "bundle exec rspec --format progress --format RspecJunitFormatter --out tmp/rspec/results.xml"
+        env:
+          SIMPLECOV: true
+
+      - name: Upload test results
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: RSpec Reports
+          path: tmp/rspec/results.xml
+          reporter: java-junit
+        continue-on-error: true
+
+      - name: Copy coverage artifacts
+        run: |
+          mkdir -p artifacts
+          cp -r ./coverage artifacts/ || true
+          cp -r ./tmp/rspec artifacts/ || true
+
+      - name: Relax permissions for artifacts
+        run: chmod -R a+rX tmp coverage artifacts || true
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rspec-coverage
+          path: artifacts/
+
+  rubocop:
+    name: RuboCop
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Compose Build (cacheable)
+        run: docker compose build
+
+      - name: Run RuboCop
+        run: |
+          mkdir -p tmp
+          docker compose run --rm -u 0:0 dev bash -c "bundle exec rubocop | tee tmp/rubocop.log"
+          test $? -eq 0 || (mkdir -p artifacts && cp tmp/rubocop.log artifacts/)
+
+      - name: Relax permissions for artifacts
+        run: chmod -R a+rX tmp artifacts || true
+
+      - name: Upload RuboCop artifacts (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rubocop-logs
+          path: artifacts/
+
+  bundler_audit:
+    name: Bundler Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Compose Build (cacheable)
+        run: docker compose build
+
+      - name: Run bundler-audit
+        run: |
+          mkdir -p tmp
+          set -o pipefail
+          docker compose run --rm -u 0:0 dev bash -c "bundle exec bundler-audit update && bundle exec bundler-audit check -v" | tee tmp/bundler-audit.log
+
+      - name: Relax permissions for artifacts
+        run: chmod -R a+rX tmp artifacts || true
+
+      - name: Upload bundler-audit logs (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundler-audit-logs
+          path: tmp/bundler-audit.log

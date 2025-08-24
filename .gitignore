@@ -1,0 +1,30 @@
+# Ignore bundler config
+.bundle/
+vendor/bundle/
+
+# Ignore logs and temp files
+log/
+tmp/
+
+# Ignore gem artifacts
+*.gem
+pkg/
+
+# Ignore coverage and test artifacts
+coverage/
+rspec_failed.txt
+
+# Ignore RubyMine or VSCode project files
+.idea/
+.vscode/
+
+# Ignore byebug history
+.byebug_history
+
+# Ignore dotenv environment files
+.env
+.env.*
+
+# Ignore OS artifacts
+.DS_Store
+Thumbs.db

@@ -1,0 +1,9 @@
+# docker-compose.yml
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: docker/dev.Dockerfile
+    volumes:
+      - .:/app
+    working_dir: /app

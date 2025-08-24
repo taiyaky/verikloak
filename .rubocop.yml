@@ -1,0 +1,43 @@
+plugins:
+  - rubocop-rspec
+
+AllCops:
+  TargetRubyVersion: 3.0
+  NewCops: enable
+  Exclude:
+    - 'spec/**/*'
+    - 'pkg/**/*'
+
+Layout/LineLength:
+  Max: 120
+
+Metrics/BlockLength:
+  Exclude:
+    - 'spec/**/*'
+
+# RSpec-related rule sets
+RSpec:
+  Enabled: true
+
+# ────────────────────────────────────────────────────────────────
+# Metrics adjustments for core library code
+
+Metrics/MethodLength:
+  Max: 25                  # Allow methods up to 25 lines
+  CountComments: false     # Don’t count comment lines toward length
+
+Metrics/AbcSize:
+  Max: 24                  # Slightly relaxed to avoid false positives on complex, well-tested methods
+
+Metrics/CyclomaticComplexity:
+  Max: 12                  # Allow up to 15 independent code paths
+
+Metrics/PerceivedComplexity:
+  Max: 12                  # Allow perceived complexity up to 15
+
+Metrics/ParameterLists:
+  Max: 6                   # Allow up to 6 method parameters
+
+Metrics/ClassLength:
+  Max: 150               # Relax class length a bit to accommodate documentation and small helpers
+  CountComments: false   # Do not count comments toward class length

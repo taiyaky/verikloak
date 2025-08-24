@@ -1,0 +1,40 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [0.1.0] - 2025-08-17
+
+### Added
+
+- Initial release of `verikloak`
+- Rack middleware for verifying JWT access tokens from Keycloak
+- Support for OpenID Connect Discovery (`.well-known/openid-configuration`)
+  - Handles up to 3 HTTP redirects and resolves relative `Location` headers
+- JWKS fetching with in-memory caching and ETag validation
+- RS256 JWT verification with `kid` matching
+- Claim validation: `aud`, `iss`, `exp`, `nbf`
+- Configurable via `discovery_url`, `audience`, and `skip_paths` options
+  - `skip_paths` supports `/`, literal paths, and `*` wildcards (e.g. `/public/*`, `/rails/*`)
+- Environment keys set by middleware:
+  - `env["verikloak.user"]` for decoded claims
+  - `env["verikloak.token"]` for the raw Bearer token
+- Comprehensive RSpec test suite:
+  - `TokenDecoder` unit tests
+  - `Discovery` behavior (redirects, invalid JSON, required fields)
+  - `JwksCache` behavior (ETag/304, parse/validation errors)
+  - Rack middleware integration tests (401/503 mapping, header parsing)
+- Docker-based development and CI-ready setup
+- RuboCop static analysis configuration
+- Structured error handling & responses:
+  - Token/auth errors → **401 Unauthorized** with `WWW-Authenticate` header (RFC 6750)
+  - Discovery/JWKS errors → **503 Service Unavailable**
+  - Structured error codes: `invalid_token`, `expired_token`, `not_yet_valid`,
+    `invalid_issuer`, `invalid_audience`, `unsupported_algorithm`,
+    `jwks_fetch_failed`, `jwks_parse_failed`, `jwks_cache_miss`,
+    `discovery_metadata_fetch_failed`, `discovery_metadata_invalid`,
+    `discovery_redirect_error`

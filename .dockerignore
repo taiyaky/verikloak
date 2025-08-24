@@ -1,0 +1,34 @@
+# Gem artifacts
+*.gem
+pkg/
+
+# Bundler
+.bundle/
+vendor/bundle/
+
+# Logs and temp files
+log/
+tmp/
+
+# Coverage / test artifacts
+coverage/
+rspec_failed.txt
+
+# Local config
+.env
+.env.*.local
+
+# Node/npm cache (念のため)
+node_modules/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Editor configs
+.vscode/
+.idea/
