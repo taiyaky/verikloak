@@ -22,9 +22,9 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = '>= 3.0'
 
   # Runtime dependencies
-  spec.add_dependency 'faraday', '>= 1.0', '< 3.0'
-  spec.add_dependency 'json', '~> 2.0'
-  spec.add_dependency 'jwt', '~> 2.0'
+  spec.add_dependency 'faraday', '>= 2.0', '< 3.0'
+  spec.add_dependency 'json', '~> 2.6'
+  spec.add_dependency 'jwt', '~> 2.7'
 
   # Metadata for RubyGems
   spec.metadata['source_code_uri'] = spec.homepage
