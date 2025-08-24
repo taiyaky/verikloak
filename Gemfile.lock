@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    verikloak (0.1.0)
+    verikloak (0.1.1)
       faraday (>= 2.0, < 3.0)
       json (~> 2.6)
       jwt (~> 2.7)
