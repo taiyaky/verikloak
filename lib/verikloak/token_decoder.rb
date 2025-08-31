@@ -30,11 +30,18 @@ module Verikloak
     # @param issuer   [String]      Expected `iss` value in the token.
     # @param audience [String]      Expected `aud` value in the token.
     # @param leeway   [Integer]     Clock skew tolerance in seconds (optional).
-    def initialize(jwks:, issuer:, audience:, leeway: DEFAULT_LEEWAY)
+    # @param options [Hash] Extra JWT verification options.
+    #   Mirrors ruby-jwt options (e.g., :leeway, :verify_iat, :verify_expiration, :verify_not_before, :algorithms).
+    #   NOTE: If both `leeway:` and `options[:leeway]` are provided, `options[:leeway]` takes precedence.
+    def initialize(jwks:, issuer:, audience:, leeway: DEFAULT_LEEWAY, options: {})
       @jwks     = jwks
       @issuer   = issuer
       @audience = audience
+      # Keep backward compatibility; can be overridden by options[:leeway]
       @leeway   = leeway
+      # Normalize and store verification options
+      @options  = symbolize_keys(options || {})
+      @options_without_leeway = @options.except(:leeway).freeze
 
       # Build a kid-indexed hash for O(1) JWK lookup
       @jwk_by_kid = {}
@@ -42,6 +49,7 @@ module Verikloak
         kid_key = fetch_indifferent(j, 'kid')
         @jwk_by_kid[kid_key] = j if kid_key
       end
+      @options.freeze
     end
 
     # Decodes and verifies a JWT.
@@ -123,8 +131,7 @@ module Verikloak
     #
     # @return [Hash]
     def jwt_decode_options
-      {
-        # Specify allowed algorithms explicitly as an array to prevent header tampering
+      base = {
         algorithms: ['RS256'],
         iss: @issuer,
         verify_iss: true,
@@ -132,9 +139,14 @@ module Verikloak
         verify_aud: true,
         verify_iat: true,
         verify_expiration: true,
-        verify_not_before: true,
-        leeway: @leeway # allow clock skew tolerance
+        verify_not_before: true
       }
+      # options[:leeway] overrides top-level @leeway if provided
+      leeway = @options.key?(:leeway) ? @options[:leeway] : @leeway
+      merged = base.merge(leeway: leeway)
+      # Merge remaining options last (excluding :leeway which is already applied)
+      extra = @options_without_leeway
+      merged.merge(extra)
     end
 
     # Imports an OpenSSL::PKey::RSA public key from the given JWK.
@@ -241,6 +253,12 @@ module Verikloak
       else
         "JWT verification failed: #{error.message}"
       end
+    end
+
+    def symbolize_keys(hash)
+      return {} unless hash.is_a?(Hash)
+
+      hash.transform_keys(&:to_sym)
     end
   end
 end

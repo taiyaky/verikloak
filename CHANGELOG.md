@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.2] - 2025-08-31
+
+### Added
+- Middleware: new `connection:` option to inject a Faraday::Connection, shared by Discovery and JWKS.
+- Middleware: new `leeway:` and `token_verify_options:` options, delegated to TokenDecoder.
+- README: documented usage of `connection`, leeway/options, and clarified `skip_paths` behavior.
+
+### Changed
+- Middleware: `skip_paths` semantics clarified — plain paths are exact-match only, use `/*` for prefix matching.
+- Middleware: TokenDecoder instances are now cached per JWKS fetch for performance improvement.
+- Internal: RuboCop style fixes (`HashExcept`, `HashTransformKeys`, long line splits).
+
+---
+
 ## [0.1.1] - 2025-08-24
 
 ### Changed

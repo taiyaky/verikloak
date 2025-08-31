@@ -2,17 +2,204 @@
 
 require 'rack'
 require 'json'
+require 'set'
+require 'faraday'
 
 module Verikloak
-  # Internal helper mixin that encapsulates error-to-HTTP mapping logic
-  # used by {Verikloak::Middleware}. By extracting this mapping into a
-  # separate module, the middleware class remains shorter and easier to
-  # reason about.
+  # @api private
+  #
+  # Internal mixin for skip-path normalization and matching.
+  # Extracted from Middleware to reduce class length and improve testability.
+  module SkipPathMatcher
+    private
+
+    # Checks whether the request path matches any compiled skip pattern.
+    #
+    # Supported patterns:
+    # * `'/'`           — matches only the root path
+    # * `'/foo'`        — exact-match only (matches `/foo` but **not** `/foo/...`)
+    # * `'/foo/*'`      — prefix match (matches `/foo` and any nested path under it)
+    #
+    # @param path [String]
+    # @return [Boolean]
+    def skip?(path)
+      np = normalize_path(path)
+      return true if @skip_root && np == '/'
+      return true if @skip_exacts.include?(np)
+
+      @skip_prefixes.any? { |prefix| np == prefix || np.start_with?("#{prefix}/") }
+    end
+
+    # Normalizes paths for stable comparisons:
+    # - ensures leading slash
+    # - collapses multiple slashes (e.g. //foo///bar -> /foo/bar)
+    # - removes trailing slash except for root
+    #
+    # @param path [String, nil]
+    # @return [String]
+    def normalize_path(path)
+      s = (path || '').to_s
+      s = "/#{s}" unless s.start_with?('/')
+      s = s.gsub(%r{/+}, '/')
+      s.length > 1 ? s.chomp('/') : s
+    end
+
+    # Pre-compiles {skip_paths} into fast lookup structures.
+    #
+    # * `@skip_root` — whether `'/'` is present
+    # * `@skip_exacts` — exact-match set (e.g. `'/health'`)
+    # * `@skip_prefixes` — wildcard prefixes for `'/*'` (e.g. `'/public'`)
+    #
+    # @param paths [Array<String>]
+    # @return [void]
+    def compile_skip_paths(paths)
+      @skip_root     = false
+      @skip_exacts   = Set.new
+      @skip_prefixes = []
+
+      Array(paths).each do |raw|
+        next if raw.nil?
+
+        s = raw.to_s.strip
+        next if s.empty?
+
+        if s == '/'
+          @skip_root = true
+          next
+        end
+
+        if s.end_with?('/*')
+          prefix = normalize_path(s.chomp('/*'))
+          next if prefix == '/' # root is handled by @skip_root
+
+          @skip_prefixes << prefix
+        else
+          exact = normalize_path(s)
+          @skip_exacts << exact
+          # Do NOT add to @skip_prefixes here; plain '/foo' is exact-match only.
+        end
+      end
+
+      @skip_prefixes.uniq!
+    end
+  end
+
+  # @api private
+  #
+  # Internal mixin for JWT verification and discovery/JWKS management.
+  # Extracted from Middleware to reduce class length and improve clarity.
+  module MiddlewareTokenVerification
+    private
+
+    # Determines whether a token verification failure warrants a one-time JWKS refresh
+    # and retry (e.g., after key rotation).
+    #
+    # @param error [Exception]
+    # @return [Boolean]
+    def retryable_decoder_error?(error)
+      return false unless error.is_a?(TokenDecoderError)
+      return true if error.code == 'invalid_signature'
+      return true if error.code == 'invalid_token' && error.message&.include?('Key with kid=')
+
+      false
+    end
+
+    # Returns a cached TokenDecoder instance for current inputs.
+    # Cache key uses issuer, audience, leeway, token_verify_options, and JWKS fetched_at timestamp.
+    def decoder_for
+      keys = @jwks_cache.cached
+      fetched_at = @jwks_cache.respond_to?(:fetched_at) ? @jwks_cache.fetched_at : nil
+      cache_key = [
+        @issuer,
+        @audience,
+        @leeway,
+        @token_verify_options,
+        fetched_at
+      ].hash
+      @mutex.synchronize do
+        @decoder_cache[cache_key] ||= TokenDecoder.new(
+          jwks: keys,
+          issuer: @issuer,
+          audience: @audience,
+          leeway: @leeway,
+          options: @token_verify_options
+        )
+      end
+    end
+
+    # Ensures JWKS are up-to-date by invoking {#ensure_jwks_cache!}.
+    # Errors are not swallowed and are handled by the caller.
+    #
+    # @return [void]
+    # @raise [Verikloak::DiscoveryError, Verikloak::JwksCacheError]
+    def refresh_jwks!
+      ensure_jwks_cache!
+    end
+
+    # Decodes and verifies the JWT using the cached JWKS. On certain verification
+    # failures (e.g., key rotation), it refreshes the JWKS and retries once.
+    #
+    # @param token [String]
+    # @return [Hash] decoded JWT claims
+    # @raise [Verikloak::Error] bubbles up verification/fetch errors for centralized handling
+    def decode_token(token)
+      ensure_jwks_cache!
+      if @jwks_cache.cached.nil? || @jwks_cache.cached.empty?
+        raise MiddlewareError.new('JWKS cache is empty, cannot verify token', code: 'jwks_cache_miss')
+      end
+
+      # First attempt
+      decoder = decoder_for
+
+      begin
+        decoder.decode!(token)
+      rescue TokenDecoderError => e
+        # On key rotation or signature mismatch, refresh JWKS and retry once.
+        raise unless retryable_decoder_error?(e)
+
+        refresh_jwks!
+
+        # Rebuild decoder with refreshed keys and try once more.
+        decoder = decoder_for
+        decoder.decode!(token)
+      end
+    end
+
+    # Ensures that discovery metadata and JWKS cache are initialized and up-to-date.
+    # This method is thread-safe.
+    #
+    # * When the cache instance is missing, it is created from discovery metadata.
+    # * JWKS are (re)fetched every time; ETag/Cache-Control headers minimize traffic.
+    #
+    # @return [void]
+    # @raise [Verikloak::DiscoveryError, Verikloak::JwksCacheError, Verikloak::MiddlewareError]
+    def ensure_jwks_cache!
+      @mutex.synchronize do
+        if @jwks_cache.nil?
+          config   = @discovery.fetch!
+          @issuer  = config['issuer']
+          jwks_uri = config['jwks_uri']
+          @jwks_cache = JwksCache.new(jwks_uri: jwks_uri, connection: @connection)
+        end
+
+        @jwks_cache.fetch!
+      end
+    rescue Verikloak::DiscoveryError, Verikloak::JwksCacheError => e
+      # Re-raise so that specific error codes can be mapped in the middleware
+      raise e
+    rescue StandardError => e
+      raise MiddlewareError.new("Failed to initialize JWKS cache: #{e.message}", code: 'jwks_fetch_failed')
+    end
+  end
+
+  # @api private
+  #
+  # Internal mixin that encapsulates error-to-HTTP mapping logic used by
+  # {Verikloak::Middleware}. By extracting this mapping into a separate module,
+  # the middleware class stays concise and easier to reason about.
   #
   # This module does not depend on Rack internals; it only interprets
   # Verikloak error objects and their `code` attributes.
-  #
-  # @api private
   module MiddlewareErrorMapping
     # Set of token/client-side error codes that should map to **401 Unauthorized**.
     # @return [Array<String>]
@@ -24,6 +211,8 @@ module Verikloak
     # Set of middleware/infrastructure error codes that should map to **503 Service Unavailable**.
     # @return [Array<String>]
     INFRA_ERROR_CODES = %w[jwks_fetch_failed jwks_cache_miss].freeze
+
+    private
 
     # @param code [String, nil] short error code
     # @return [Boolean] true if the error should be treated as a 403 Forbidden
@@ -85,37 +274,53 @@ module Verikloak
   #
   # Failures are converted to JSON error responses with appropriate status codes.
   class Middleware
+    include MiddlewareErrorMapping
+    include SkipPathMatcher
+    include MiddlewareTokenVerification
+
     # @param app [#call] downstream Rack app
     # @param discovery_url [String] OIDC discovery endpoint URL
-    # @param audience [String] Expected `aud` claim
-    # @param skip_paths [Array<String>] Literal paths or wildcard patterns to bypass auth
-    # @param discovery [Discovery, nil] Custom discovery instance (for DI/tests)
-    # @param jwks_cache [JwksCache, nil] Custom JWKS cache instance (for DI/tests)
+    # @param audience [String] expected `aud` claim
+    # @param skip_paths [Array<String>] literal paths or wildcard patterns to bypass auth
+    # @param discovery [Discovery, nil] custom discovery instance (for DI/tests)
+    # @param jwks_cache [JwksCache, nil] custom JWKS cache instance (for DI/tests)
+    # @param connection [Faraday::Connection, nil] Optional injected Faraday connection (defaults to Faraday.new)
+    # @param leeway [Integer] Clock skew tolerance in seconds for token verification (delegated to TokenDecoder)
+    # @param token_verify_options [Hash] Additional JWT verification options passed through
+    #   to TokenDecoder.
+    #   e.g., { verify_iat: false, leeway: 10 }
     def initialize(app,
                    discovery_url:,
                    audience:,
                    skip_paths: [],
                    discovery: nil,
-                   jwks_cache: nil)
+                   jwks_cache: nil,
+                   connection: nil,
+                   leeway: Verikloak::TokenDecoder::DEFAULT_LEEWAY,
+                   token_verify_options: {})
       @app           = app
       @audience      = audience
-      @skip_paths    = skip_paths
       @discovery     = discovery || Discovery.new(discovery_url: discovery_url)
       @jwks_cache    = jwks_cache
+      @connection    = connection || Faraday.new
+      @leeway        = leeway
+      @token_verify_options = token_verify_options || {}
       @issuer        = nil
       @mutex         = Mutex.new
+      @decoder_cache = {}
+
+      compile_skip_paths(skip_paths)
     end
 
     # Rack entrypoint.
     #
     # @param env [Hash] Rack environment
-    # @return [Array(Integer, Hash, Array<String>)] standard Rack response
+    # @return [Array(Integer, Hash, Array<String>)] standard Rack response triple
     def call(env)
       path = env['PATH_INFO']
       return @app.call(env) if skip?(path)
 
       token = extract_token(env)
-
       handle_request(env, token)
     rescue Verikloak::Error => e
       code, status = map_error(e)
@@ -127,61 +332,17 @@ module Verikloak
 
     private
 
-    include MiddlewareErrorMapping
-
-    # Determines whether a token verification failure warrants a one-time JWKS refresh
-    # and retry (e.g., after key rotation).
-    #
-    # @param error [Exception]
-    # @return [Boolean]
-    # @api private
-    def retryable_decoder_error?(error)
-      return false unless error.is_a?(TokenDecoderError)
-
-      return true if error.code == 'invalid_signature'
-      return true if error.code == 'invalid_token' && error.message&.include?('Key with kid=')
-
-      false
-    end
-
-    # Ensures JWKS are up-to-date by invoking {#ensure_jwks_cache!}.
-    # Errors are not swallowed and are handled by the caller.
-    #
-    # @return [void]
-    # @raise [Verikloak::DiscoveryError, Verikloak::JwksCacheError]
-    # @api private
-    def refresh_jwks!
-      # Ensure discovery has been performed so we have a jwks_cache instance.
-      ensure_jwks_cache!
-    end
-
-    # Checks whether the request path matches any skip pattern.
-    #
-    # Supported patterns:
-    # * `'/'` — matches only the root path
-    # * `'/foo/*'` — matches `/foo` itself and any nested path under it
-    # * `'/api/public'` — exact match only (no wildcard)
-    #
-    # @param path [String]
-    # @return [Boolean]
-    def skip?(path)
-      @skip_paths.any? do |pattern|
-        if pattern == '/'
-          path == '/'
-        elsif pattern.end_with?('/*')
-          prefix = pattern.chomp('/*')
-          path == prefix || path.start_with?("#{prefix}/")
-        else
-          path == pattern || path.start_with?("#{pattern}/")
-        end
-      end
+    # Returns the Faraday connection used for HTTP operations (Discovery/JWKS).
+    # Exposed for tests; not part of public API.
+    def http_connection
+      @connection
     end
 
     # Verifies the token, stores result in Rack env, and forwards to the downstream app.
     #
     # @param env [Hash]
     # @param token [String]
-    # @return [Array(Integer, Hash, Array<String>)]
+    # @return [Array(Integer, Hash, Array<String>)] Rack response triple
     def handle_request(env, token)
       claims = decode_token(token)
       env['verikloak.token'] = token
@@ -207,69 +368,6 @@ module Verikloak
       end
 
       token
-    end
-
-    # Decodes and verifies the JWT using the cached JWKS. On certain verification
-    # failures (e.g., key rotation), it refreshes the JWKS and retries once.
-    #
-    # @param token [String]
-    # @return [Hash] decoded JWT claims
-    # @raise [Verikloak::Error] bubbles up verification/fetch errors for centralized handling
-    def decode_token(token)
-      ensure_jwks_cache!
-      if @jwks_cache.cached.nil? || @jwks_cache.cached.empty?
-        raise MiddlewareError.new('JWKS cache is empty, cannot verify token', code: 'jwks_cache_miss')
-      end
-
-      # First attempt
-      decoder = TokenDecoder.new(
-        jwks: @jwks_cache.cached,
-        issuer: @issuer,
-        audience: @audience
-      )
-
-      begin
-        decoder.decode!(token)
-      rescue TokenDecoderError => e
-        # On key rotation or signature mismatch, refresh JWKS and retry once.
-        raise unless retryable_decoder_error?(e)
-
-        refresh_jwks!
-
-        # Rebuild decoder with refreshed keys and try once more.
-        decoder = TokenDecoder.new(
-          jwks: @jwks_cache.cached,
-          issuer: @issuer,
-          audience: @audience
-        )
-        decoder.decode!(token)
-      end
-    end
-
-    # Ensures that discovery metadata and JWKS cache are initialized and up-to-date.
-    # This method is thread-safe.
-    #
-    # * When the cache instance is missing, it is created from discovery metadata.
-    # * JWKS are (re)fetched every time; ETag/Cache-Control headers minimize traffic.
-    #
-    # @return [void]
-    # @raise [Verikloak::DiscoveryError, Verikloak::JwksCacheError, Verikloak::MiddlewareError]
-    def ensure_jwks_cache!
-      @mutex.synchronize do
-        if @jwks_cache.nil?
-          config   = @discovery.fetch!
-          @issuer  = config['issuer']
-          jwks_uri = config['jwks_uri']
-          @jwks_cache = JwksCache.new(jwks_uri: jwks_uri)
-        end
-
-        @jwks_cache.fetch!
-      end
-    rescue Verikloak::DiscoveryError, Verikloak::JwksCacheError => e
-      # Re-raise so that specific error codes can be mapped in the middleware
-      raise e
-    rescue StandardError => e
-      raise MiddlewareError.new("Failed to initialize JWKS cache: #{e.message}", code: 'jwks_fetch_failed')
     end
 
     # Converts a raised error into a `[code, http_status]` tuple for response rendering.
@@ -313,7 +411,6 @@ module Verikloak
     #
     # @param error [Exception]
     # @return [void]
-    # @api private
     def log_internal_error(error)
       warn "[verikloak] Internal error: #{error.class} - #{error.message}"
       warn error.backtrace.join("\n") if error.backtrace
