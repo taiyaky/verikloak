@@ -14,7 +14,7 @@ Verikloak is a plug-and-play solution for Ruby (especially Rails API) apps that 
 ## Features
 
 - OpenID Connect Discovery (`.well-known/openid-configuration`)
-- JWKs auto-fetch and in-memory caching with ETag support
+- JWKS auto-fetching with in-memory caching and ETag support
 - RS256 JWT verification using `kid`
 - `aud`, `iss`, `exp`, `nbf` claim validation
 - Rails/Rack middleware support
@@ -99,14 +99,7 @@ config.middleware.use Verikloak::Middleware,
   audience: ENV.fetch("CLIENT_ID"),
   skip_paths: ['/', '/health', '/public/*', '/rails/*']
 ```
-#### In production, set these variables in your environment for security and flexibility.
-
 This makes the configuration secure and flexible across environments.
-
-```ruby
-request.env["verikloak.user"]  # => JWT claims hash
-request.env["verikloak.token"] # => Raw JWT string
-```
 ---
 ### Accessing claims in controllers
 
