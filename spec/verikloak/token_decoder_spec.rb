@@ -91,7 +91,11 @@ RSpec.describe Verikloak::TokenDecoder do
       token = encode
       
       header, payload, sig = token.split(".")
-      # Decode payload, change a claim, and re-encode to keep base64url valid (avoid ruby-jwt base64 deprecation warnings)
+      # Decode payload, change a claim, and re-encode to keep base64url valid.
+      # NOTE: Using ::Base64 (strict_decode64/strict_encode64) directly can trigger
+      # deprecation warnings in ruby-jwt >= 2.7 when mismatched padding occurs.
+      # We intentionally use JWT::Base64 helpers here to match ruby-jwt's internal
+      # encoding logic and avoid those warnings in test output.
       payload_json = JSON.parse(JWT::Base64.url_decode(payload))
       payload_json["aud"] = "tampered-aud"
       tampered_payload = JWT::Base64.url_encode(payload_json.to_json)

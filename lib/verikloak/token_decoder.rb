@@ -41,6 +41,7 @@ module Verikloak
       @leeway   = leeway
       # Normalize and store verification options
       @options  = symbolize_keys(options || {})
+      @options_without_leeway = @options.except(:leeway).freeze
 
       # Build a kid-indexed hash for O(1) JWK lookup
       @jwk_by_kid = {}
@@ -144,7 +145,7 @@ module Verikloak
       leeway = @options.key?(:leeway) ? @options[:leeway] : @leeway
       merged = base.merge(leeway: leeway)
       # Merge remaining options last (excluding :leeway which is already applied)
-      extra = @options.except(:leeway)
+      extra = @options_without_leeway
       merged.merge(extra)
     end
 
