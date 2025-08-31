@@ -29,7 +29,7 @@ RSpec.describe Verikloak::Middleware do
     allow_any_instance_of(Verikloak::Discovery).to receive(:fetch!)
       .and_return({ "issuer" => "https://example.com/", "jwks_uri" => "https://example.com/jwks" })
 
-    # Mock the JWKS cache
+    # Mock the JWKs cache
     allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
     allow_any_instance_of(Verikloak::JwksCache).to receive(:cached).and_return([{"kid" => "dummy"}])
 
@@ -118,13 +118,13 @@ RSpec.describe Verikloak::Middleware do
   end
 
   context "when kid rotates and first decode fails" do
-    it "refreshes JWKS and retries once successfully" do
+    it "refreshes JWKs and retries once successfully" do
       # First call to decode! fails with kid-miss, second call succeeds
-      first_error = Verikloak::TokenDecoderError.new("Key with kid=abc not found in JWKS", code: "invalid_token")
+      first_error = Verikloak::TokenDecoderError.new("Key with kid=abc not found in JWKs", code: "invalid_token")
       expect(decoder).to receive(:decode!).and_raise(first_error).ordered
       expect(decoder).to receive(:decode!).and_return({ "sub" => "user2" }).ordered
 
-      # Ensure JWKS is fetched twice: initial ensure_jwks_cache! + refresh_jwks! on retry
+      # Ensure JWKs is fetched twice: initial ensure_jwks_cache! + refresh_jwks! on retry
       expect_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).twice.and_return(true)
 
       header "Authorization", "Bearer rotated.token"
@@ -134,21 +134,21 @@ RSpec.describe Verikloak::Middleware do
     end
   end
 
-  context "when JWKS cache is empty" do
-    # Test scenario: JWKS cache is empty, token validation cannot proceed, middleware rejects request
+  context "when JWKs cache is empty" do
+    # Test scenario: JWKs cache is empty, token validation cannot proceed, middleware rejects request
     before do
       allow_any_instance_of(Verikloak::JwksCache).to receive(:cached).and_return([])
-      allow(decoder).to receive(:decode!).and_return({ "sub" => "user1" }) # This will not be called since JWKS cache is empty
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "user1" }) # This will not be called since JWKs cache is empty
     end
 
     it "returns 503 Service Unavailable" do
-      # Checks that empty JWKS cache causes 503 with appropriate error message
+      # Checks that empty JWKs cache causes 503 with appropriate error message
       header "Authorization", "Bearer any.token"
       get "/"
       expect(last_response.status).to eq 503
       json = JSON.parse(last_response.body)
       expect(json["error"]).to eq("jwks_cache_miss")
-      expect(json["message"]).to match(/JWKS cache is empty/i)
+      expect(json["message"]).to match(/JWKs cache is empty/i)
       expect(last_response.headers).not_to have_key("WWW-Authenticate")
     end
   end
@@ -209,7 +209,7 @@ RSpec.describe Verikloak::Middleware do
       request.get("/", "HTTP_AUTHORIZATION" => "Bearer abc.def.ghi")
     end
   
-    it "reuses TokenDecoder instance when JWKS is unchanged (same fetched_at)" do
+    it "reuses TokenDecoder instance when JWKs is unchanged (same fetched_at)" do
       # With constant fetched_at, TokenDecoder.new should be called once for multiple requests
       expect(Verikloak::TokenDecoder).to receive(:new).once.and_return(decoder)
   
@@ -222,7 +222,7 @@ RSpec.describe Verikloak::Middleware do
       expect(last_response.status).to eq 200
     end
   
-    it "rebuilds TokenDecoder when JWKS fetched_at changes" do
+    it "rebuilds TokenDecoder when JWKs fetched_at changes" do
       allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
       t0 = Time.now
       t1 = t0 + 1
@@ -242,7 +242,7 @@ RSpec.describe Verikloak::Middleware do
     end
   end
   
-  context "connection injection to JWKS cache" do
+  context "connection injection to JWKs cache" do
     it "passes injected Faraday connection into JwksCache.new" do
       conn = Faraday.new
       # Verify that our connection object is passed into JwksCache.new by middleware
@@ -353,7 +353,7 @@ RSpec.describe Verikloak::Middleware do
         token_verify_options: { verify_expiration: false }
       )
 
-      # Discovery and JWKS behave the same for both
+      # Discovery and JWKs behave the same for both
       allow_any_instance_of(Verikloak::Discovery).to receive(:fetch!)
         .and_return({ "issuer" => "https://example.com/", "jwks_uri" => "https://example.com/jwks" })
       allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)

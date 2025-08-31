@@ -3,7 +3,7 @@
 require 'jwt'
 
 module Verikloak
-  # Verifies JWT tokens using a JWKS key set.
+  # Verifies JWT tokens using a JWKs.
   #
   # This class validates a JWT's signature and standard claims (`iss`, `aud`, `exp`, `nbf`, etc.)
   # using the appropriate RSA public key selected by the JWT's `kid` header.
@@ -24,7 +24,7 @@ module Verikloak
     # Default clock skew tolerance in seconds.
     DEFAULT_LEEWAY = 60
 
-    # Initializes the decoder with a JWKS and verification criteria.
+    # Initializes the decoder with a JWKs and verification criteria.
     #
     # @param jwks     [Array<Hash>] List of JWKs from the discovery document.
     # @param issuer   [String]      Expected `iss` value in the token.
@@ -106,7 +106,7 @@ module Verikloak
       kid = fetch_indifferent(header, 'kid')
       jwk = @jwk_by_kid[kid]
 
-      raise TokenDecoderError.new("Key with kid=#{kid} not found in JWKS", code: 'invalid_token') unless jwk
+      raise TokenDecoderError.new("Key with kid=#{kid} not found in JWKs", code: 'invalid_token') unless jwk
 
       jwk
     end

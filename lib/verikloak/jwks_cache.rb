@@ -4,14 +4,14 @@ require 'faraday'
 require 'json'
 
 module Verikloak
-  # Caches and revalidates JSON Web Key Sets (JWKS) fetched from a remote endpoint.
+  # Caches and revalidates JSON Web Key Sets (JWKs) fetched from a remote endpoint.
   #
   # This cache supports two HTTP cache mechanisms:
   # - **ETag revalidation** via `If-None-Match` → returns `304 Not Modified` when unchanged.
   # - **TTL freshness** via `Cache-Control: max-age` → avoids HTTP requests while fresh.
   #
   # On a successful `200 OK`, the cache:
-  # - Parses the JWKS JSON (`{"keys":[...]}`) and validates each JWK has `kid`, `kty`, `n`, `e`.
+  # - Parses the JWKs JSON (`{"keys":[...]}`) and validates each JWK has `kid`, `kty`, `n`, `e`.
   # - Stores the keys in-memory, records `ETag`, and computes freshness from `Cache-Control`.
   #
   # On a `304 Not Modified`, the cache:
@@ -34,12 +34,12 @@ module Verikloak
   # adapters, and shared headers (kept consistent with Discovery).
   #   `JwksCache.new(jwks_uri: "...", connection: Faraday.new { |f| f.request :retry })`
   class JwksCache
-    # @param jwks_uri [String] HTTPS URL of the JWKS endpoint
+    # @param jwks_uri [String] HTTPS URL of the JWKs endpoint
     # @param connection [Faraday::Connection, nil] Optional Faraday connection for HTTP requests
     # @raise [JwksCacheError] if the URI is not an HTTP(S) URL
     def initialize(jwks_uri:, connection: nil)
       unless jwks_uri.is_a?(String) && jwks_uri.strip.match?(%r{^https?://})
-        raise JwksCacheError.new('Invalid JWKS URI: must be a non-empty HTTP(S) URL', code: 'jwks_fetch_failed')
+        raise JwksCacheError.new('Invalid JWKs URI: must be a non-empty HTTP(S) URL', code: 'jwks_fetch_failed')
       end
 
       @jwks_uri    = jwks_uri
@@ -50,7 +50,7 @@ module Verikloak
       @max_age     = nil
     end
 
-    # Fetches the JWKS and updates the in-memory cache.
+    # Fetches the JWKs and updates the in-memory cache.
     #
     # Performs an HTTP GET with `If-None-Match` when an ETag is present and handles:
     # - 200: parses/validates body, updates keys, ETag, TTL and `fetched_at`.
@@ -103,11 +103,11 @@ module Verikloak
     rescue Faraday::ConnectionFailed, Faraday::TimeoutError
       raise JwksCacheError.new('Connection failed', code: 'jwks_fetch_failed')
     rescue Faraday::Error => e
-      raise JwksCacheError.new("JWKS fetch failed: #{e.message}", code: 'jwks_fetch_failed')
+      raise JwksCacheError.new("JWKs fetch failed: #{e.message}", code: 'jwks_fetch_failed')
     rescue JSON::ParserError
       raise JwksCacheError.new('Response is not valid JSON', code: 'jwks_parse_failed')
     rescue StandardError => e
-      raise JwksCacheError.new("Unexpected JWKS fetch error: #{e.message}", code: 'jwks_fetch_failed')
+      raise JwksCacheError.new("Unexpected JWKs fetch error: #{e.message}", code: 'jwks_fetch_failed')
     end
 
     # @api private
@@ -161,7 +161,7 @@ module Verikloak
     end
 
     # @api private
-    # Extracts and validates the `keys` array from a JWKS JSON document.
+    # Extracts and validates the `keys` array from a JWKs JSON document.
     # Ensures each key has `kid`, `kty`, `n`, and `e`.
     #
     # @param json [Hash]
@@ -213,12 +213,12 @@ module Verikloak
         # Revalidation succeeded; update freshness from 304 headers if present
         process_not_modified(response)
       else
-        raise JwksCacheError.new("Failed to fetch JWKS: status #{response.status}", code: 'jwks_fetch_failed')
+        raise JwksCacheError.new("Failed to fetch JWKs: status #{response.status}", code: 'jwks_fetch_failed')
       end
     end
 
     # @api private
-    # Handles a 200 OK JWKS response.
+    # Handles a 200 OK JWKs response.
     # @param response [Faraday::Response]
     # @return [Array&lt;Hash&gt;] parsed and cached keys
     def process_successful_response(response)
@@ -229,7 +229,7 @@ module Verikloak
     end
 
     # @api private
-    # Handles a 304 Not Modified JWKS response: updates TTL and timestamp, returns cached keys.
+    # Handles a 304 Not Modified JWKs response: updates TTL and timestamp, returns cached keys.
     # @param response [Faraday::Response]
     # @return [Array&lt;Hash&gt;]
     # @raise [JwksCacheError] when cache is empty
@@ -246,7 +246,7 @@ module Verikloak
     # @return [Array&lt;Hash&gt;]
     # @raise [JwksCacheError]
     def return_from_cache_or_fail
-      @cached_keys || raise(JwksCacheError.new('JWKS cache is empty but received 304 Not Modified',
+      @cached_keys || raise(JwksCacheError.new('JWKs cache is empty but received 304 Not Modified',
                                                code: 'jwks_cache_miss'))
     end
   end

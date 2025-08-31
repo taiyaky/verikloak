@@ -35,7 +35,7 @@ module Verikloak
 
   # Raised for middleware-level failures while processing a Rack request.
   #
-  # Examples include missing/invalid Authorization headers, JWKS cache
+  # Examples include missing/invalid Authorization headers, JWKs cache
   # initialization failures, or infrastructure issues detected by the
   # middleware itself.
   #
@@ -55,7 +55,7 @@ module Verikloak
   # @raise [TokenDecoderError] from {Verikloak::TokenDecoder#decode!}
   class TokenDecoderError < Error; end
 
-  # Raised when JWKS fetching, validation, or cache handling fails.
+  # Raised when JWKs fetching, validation, or cache handling fails.
   #
   # Causes include HTTP failures, invalid JSON, missing required JWK fields,
   # or receiving 304 Not Modified without a prior cached value.

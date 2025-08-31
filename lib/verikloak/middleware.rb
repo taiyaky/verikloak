@@ -86,12 +86,12 @@ module Verikloak
 
   # @api private
   #
-  # Internal mixin for JWT verification and discovery/JWKS management.
+  # Internal mixin for JWT verification and discovery/JWKs management.
   # Extracted from Middleware to reduce class length and improve clarity.
   module MiddlewareTokenVerification
     private
 
-    # Determines whether a token verification failure warrants a one-time JWKS refresh
+    # Determines whether a token verification failure warrants a one-time JWKs refresh
     # and retry (e.g., after key rotation).
     #
     # @param error [Exception]
@@ -105,7 +105,7 @@ module Verikloak
     end
 
     # Returns a cached TokenDecoder instance for current inputs.
-    # Cache key uses issuer, audience, leeway, token_verify_options, and JWKS fetched_at timestamp.
+    # Cache key uses issuer, audience, leeway, token_verify_options, and JWKs fetched_at timestamp.
     def decoder_for
       keys = @jwks_cache.cached
       fetched_at = @jwks_cache.respond_to?(:fetched_at) ? @jwks_cache.fetched_at : nil
@@ -127,7 +127,7 @@ module Verikloak
       end
     end
 
-    # Ensures JWKS are up-to-date by invoking {#ensure_jwks_cache!}.
+    # Ensures JWKs are up-to-date by invoking {#ensure_jwks_cache!}.
     # Errors are not swallowed and are handled by the caller.
     #
     # @return [void]
@@ -136,8 +136,8 @@ module Verikloak
       ensure_jwks_cache!
     end
 
-    # Decodes and verifies the JWT using the cached JWKS. On certain verification
-    # failures (e.g., key rotation), it refreshes the JWKS and retries once.
+    # Decodes and verifies the JWT using the cached JWKs. On certain verification
+    # failures (e.g., key rotation), it refreshes the JWKs and retries once.
     #
     # @param token [String]
     # @return [Hash] decoded JWT claims
@@ -145,7 +145,7 @@ module Verikloak
     def decode_token(token)
       ensure_jwks_cache!
       if @jwks_cache.cached.nil? || @jwks_cache.cached.empty?
-        raise MiddlewareError.new('JWKS cache is empty, cannot verify token', code: 'jwks_cache_miss')
+        raise MiddlewareError.new('JWKs cache is empty, cannot verify token', code: 'jwks_cache_miss')
       end
 
       # First attempt
@@ -154,7 +154,7 @@ module Verikloak
       begin
         decoder.decode!(token)
       rescue TokenDecoderError => e
-        # On key rotation or signature mismatch, refresh JWKS and retry once.
+        # On key rotation or signature mismatch, refresh JWKs and retry once.
         raise unless retryable_decoder_error?(e)
 
         refresh_jwks!
@@ -165,11 +165,11 @@ module Verikloak
       end
     end
 
-    # Ensures that discovery metadata and JWKS cache are initialized and up-to-date.
+    # Ensures that discovery metadata and JWKs cache are initialized and up-to-date.
     # This method is thread-safe.
     #
     # * When the cache instance is missing, it is created from discovery metadata.
-    # * JWKS are (re)fetched every time; ETag/Cache-Control headers minimize traffic.
+    # * JWKs are (re)fetched every time; ETag/Cache-Control headers minimize traffic.
     #
     # @return [void]
     # @raise [Verikloak::DiscoveryError, Verikloak::JwksCacheError, Verikloak::MiddlewareError]
@@ -188,7 +188,7 @@ module Verikloak
       # Re-raise so that specific error codes can be mapped in the middleware
       raise e
     rescue StandardError => e
-      raise MiddlewareError.new("Failed to initialize JWKS cache: #{e.message}", code: 'jwks_fetch_failed')
+      raise MiddlewareError.new("Failed to initialize JWKs cache: #{e.message}", code: 'jwks_fetch_failed')
     end
   end
 
@@ -267,7 +267,7 @@ module Verikloak
   end
 
   # Rack middleware that verifies incoming JWT access tokens (Keycloak) using
-  # OpenID Connect discovery and JWKS. On success, it populates:
+  # OpenID Connect discovery and JWKs. On success, it populates:
   #
   # * `env['verikloak.token']` — the raw JWT string
   # * `env['verikloak.user']`  — the decoded JWT claims Hash
@@ -283,7 +283,7 @@ module Verikloak
     # @param audience [String] expected `aud` claim
     # @param skip_paths [Array<String>] literal paths or wildcard patterns to bypass auth
     # @param discovery [Discovery, nil] custom discovery instance (for DI/tests)
-    # @param jwks_cache [JwksCache, nil] custom JWKS cache instance (for DI/tests)
+    # @param jwks_cache [JwksCache, nil] custom JWKs cache instance (for DI/tests)
     # @param connection [Faraday::Connection, nil] Optional injected Faraday connection (defaults to Faraday.new)
     # @param leeway [Integer] Clock skew tolerance in seconds for token verification (delegated to TokenDecoder)
     # @param token_verify_options [Hash] Additional JWT verification options passed through
@@ -332,7 +332,7 @@ module Verikloak
 
     private
 
-    # Returns the Faraday connection used for HTTP operations (Discovery/JWKS).
+    # Returns the Faraday connection used for HTTP operations (Discovery/JWKs).
     # Exposed for tests; not part of public API.
     def http_connection
       @connection

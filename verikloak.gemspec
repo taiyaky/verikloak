@@ -11,7 +11,7 @@ Gem::Specification.new do |spec|
   spec.description   = <<~DESC
     Verikloak is a lightweight Ruby gem that provides JWT access token verification middleware
     for Rack-based applications, including Rails API mode. It uses OpenID Connect discovery
-    and JWKS to securely validate tokens issued by Keycloak.
+    and JWKs to securely validate tokens issued by Keycloak.
   DESC
   spec.homepage      = 'https://github.com/taiyaky/verikloak'
   spec.license       = 'MIT'

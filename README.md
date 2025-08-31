@@ -7,14 +7,14 @@
 
 A lightweight Rack middleware for verifying Keycloak JWT access tokens via OpenID Connect.
 
-Verikloak is a plug-and-play solution for Ruby (especially Rails API) apps that need to validate incoming `Bearer` tokens issued by Keycloak. It uses OpenID Connect Discovery and JWKS to fetch the public keys and verify JWT signatures securely.
+Verikloak is a plug-and-play solution for Ruby (especially Rails API) apps that need to validate incoming `Bearer` tokens issued by Keycloak. It uses OpenID Connect Discovery and JWKs to fetch the public keys and verify JWT signatures securely.
 
 ---
 
 ## Features
 
 - OpenID Connect Discovery (`.well-known/openid-configuration`)
-- JWKs auto-fetch and in-memory caching with ETag support
+- JWKs auto-fetching with in-memory caching and ETag support
 - RS256 JWT verification using `kid`
 - `aud`, `iss`, `exp`, `nbf` claim validation
 - Rails/Rack middleware support
@@ -53,7 +53,7 @@ config.middleware.use Verikloak::Middleware,
 
 #### Handling Authentication Failures
 
-When you use the Rack middleware, authentication failures are automatically converted into JSON error responses (for example, `401` for token issues, `503` for JWKS/discovery errors). In most cases **you do not need to add custom `rescue_from` handlers** in Rails controllers.
+When you use the Rack middleware, authentication failures are automatically converted into JSON error responses (for example, `401` for token issues, `503` for JWKs/discovery errors). In most cases **you do not need to add custom `rescue_from` handlers** in Rails controllers.
 
 If you use Verikloak components directly (bypassing the Rack middleware) or prefer centralized error handling, rescue from the base class `Verikloak::Error`. You can also match subclasses such as `Verikloak::TokenDecoderError`, `Verikloak::DiscoveryError`, or `Verikloak::JwksCacheError` depending on your needs:
 
@@ -88,7 +88,7 @@ All Verikloak errors inherit from `Verikloak::Error`:
 
 - `Verikloak::TokenDecoderError` – token parsing/verification (`401 Unauthorized`)
 - `Verikloak::DiscoveryError` – OIDC discovery fetch/parse (`503 Service Unavailable`)
-- `Verikloak::JwksCacheError` – JWKS fetch/parse/cache (`503 Service Unavailable`)
+- `Verikloak::JwksCacheError` – JWKs fetch/parse/cache (`503 Service Unavailable`)
 - `Verikloak::MiddlewareError` – header/infra issues surfaced by the middleware (usually `401`, sometimes `503`)
 ---
 #### Recommended: use environment variables in production
@@ -99,14 +99,7 @@ config.middleware.use Verikloak::Middleware,
   audience: ENV.fetch("CLIENT_ID"),
   skip_paths: ['/', '/health', '/public/*', '/rails/*']
 ```
-#### In production, set these variables in your environment for security and flexibility.
-
 This makes the configuration secure and flexible across environments.
-
-```ruby
-request.env["verikloak.user"]  # => JWT claims hash
-request.env["verikloak.token"] # => Raw JWT string
-```
 ---
 ### Accessing claims in controllers
 
@@ -146,7 +139,7 @@ run ->(env) {
 
 1. Extracts the `Authorization: Bearer <token>` header
 2. Fetches the OIDC discovery document (only once or when expired)
-3. Downloads JWKS public keys from the provided `jwks_uri`
+3. Downloads JWKs public keys from the provided `jwks_uri`
 4. Matches the `kid` from JWT header to select the right JWK
 5. Decodes and verifies the JWT using `RS256`
 6. Validates the following claims:
@@ -160,12 +153,12 @@ run ->(env) {
 
 ## Error Responses
 
-Verikloak returns JSON error responses in a consistent format with structured error codes. The HTTP status code reflects the nature of the error: 401 for client-side authentication issues, 503 for server-side discovery/JWKS errors, and 500 for unexpected internal errors.
+Verikloak returns JSON error responses in a consistent format with structured error codes. The HTTP status code reflects the nature of the error: 401 for client-side authentication issues, 503 for server-side discovery/JWKs errors, and 500 for unexpected internal errors.
 
 ### Common HTTP Responses
 
 - `401 Unauthorized`: The access token is missing, invalid, expired, or otherwise not valid.
-- `503 Service Unavailable`: Discovery or JWKS fetch/parsing failed (server-side issue).
+- `503 Service Unavailable`: Discovery or JWKs fetch/parsing failed (server-side issue).
 - `500 Internal Server Error`: An unexpected error occurred.
 
 ### Representative Examples
@@ -187,14 +180,14 @@ Verikloak returns JSON error responses in a consistent format with structured er
 ```json
 {
   "error": "jwks_fetch_failed",
-  "message": "Failed to fetch JWKS keys"
+  "message": "Failed to fetch JWKs"
 }
 ```
 
 ```json
 {
   "error": "jwks_parse_failed",
-  "message": "Failed to parse JWKS keys"
+  "message": "Failed to parse JWKs"
 }
 ```
 
@@ -225,9 +218,9 @@ Verikloak returns JSON error responses in a consistent format with structured er
 | `invalid_issuer`           | 401 Unauthorized          | Invalid `iss` claim                                                                          |
 | `invalid_audience`         | 401 Unauthorized          | Invalid `aud` claim                                                                          |
 | `not_yet_valid`            | 401 Unauthorized          | The token is not yet valid (`nbf` in the future)                                             |
-| `jwks_fetch_failed`        | 503 Service Unavailable   | Failed to fetch JWKS keys                                                                    |
-| `jwks_parse_failed`        | 503 Service Unavailable   | Failed to parse JWKS keys                                                                    |
-| `jwks_cache_miss`          | 503 Service Unavailable   | JWKS cache is empty (e.g., 304 Not Modified without prior cache)                             |
+| `jwks_fetch_failed`        | 503 Service Unavailable   | Failed to fetch JWKs                                                                    |
+| `jwks_parse_failed`        | 503 Service Unavailable   | Failed to parse JWKs                                                                    |
+| `jwks_cache_miss`          | 503 Service Unavailable   | JWKs cache is empty (e.g., 304 Not Modified without prior cache)                             |
 | `discovery_metadata_fetch_failed` | 503 Service Unavailable   | Failed to fetch OIDC discovery document                                               |
 | `discovery_metadata_invalid` | 503 Service Unavailable   | Failed to parse OIDC discovery document                                                    |
 | `discovery_redirect_error` | 503 Service Unavailable   | Discovery response was a redirect without a valid Location header                           |
@@ -249,7 +242,7 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `jwks_cache`    | No       | Inject custom JwksCache instance (advanced/testing) |
 | `leeway`       | No       | Clock skew tolerance (seconds) applied during JWT verification. Defaults to `TokenDecoder::DEFAULT_LEEWAY`. |
 | `token_verify_options` | No | Hash of advanced JWT verification options passed through to TokenDecoder. For example: `{ verify_iat: false, leeway: 10, algorithms: ["RS256"] }`. If both `leeway:` and `token_verify_options[:leeway]` are set, the latter takes precedence. |
-| `connection`   | No       | Inject a Faraday::Connection used for both Discovery and JWKS fetches. Allows unified timeout, retry, and headers. |
+| `connection`   | No       | Inject a Faraday::Connection used for both Discovery and JWKs fetches. Allows unified timeout, retry, and headers. |
 
 #### Option: `skip_paths`
 
@@ -271,7 +264,7 @@ Paths **not matched** by any `skip_paths` entry will require a valid JWT.
 **Note:** Regex patterns are not supported. Only literal paths and `*` wildcards are allowed.  
 Internally, `*` expands to match nested paths, so patterns like `/rails/*` are valid. This differs from regex — for example, `'/rails'` alone matches only `/rails`, while `'/rails/*'` covers both `/rails` and deeper subpaths.
 
-#### Customizing Faraday for Discovery and JWKS
+#### Customizing Faraday for Discovery and JWKs
 
 Both `Discovery` and `JwksCache` accept a `Faraday::Connection`.  
 This allows you to configure timeouts, retries, logging, and shared headers:
@@ -289,7 +282,7 @@ config.middleware.use Verikloak::Middleware,
     connection: connection
   )
 ```
-This makes it easy to apply consistent Faraday settings across both discovery and JWKS fetches.
+This makes it easy to apply consistent Faraday settings across both discovery and JWKs fetches.
 
 ```ruby
 # Alternatively, you can pass the connection directly to the middleware:
@@ -325,9 +318,9 @@ config.middleware.use Verikloak::Middleware,
 
 #### Performance note
 
-Internally, Verikloak caches `TokenDecoder` instances per JWKS fetch to avoid reinitializing
+Internally, Verikloak caches `TokenDecoder` instances per JWKs fetch to avoid reinitializing
 them on every request. This improves performance while still ensuring that keys are
-revalidated when JWKS is refreshed.
+revalidated when JWKs is refreshed.
 
 ## Architecture
 
@@ -337,7 +330,7 @@ Verikloak consists of modular components, each with a focused responsibility:
 |----------------|--------------------------------------------------------|--------------|
 | `Middleware`    | Rack-compatible entry point for token validation     | Rack layer   |
 | `Discovery`     | Fetches OIDC discovery metadata (`.well-known`)      | Network layer|
-| `JwksCache`     | Fetches & caches JWKS public keys (with ETag)        | Cache layer  |
+| `JwksCache`     | Fetches & caches JWKs public keys (with ETag)        | Cache layer  |
 | `TokenDecoder`  | Decodes and verifies JWTs (signature, exp, nbf, iss, aud) | Crypto layer |
 | `Errors`        | Centralized error hierarchy                          | Core layer   |
 
