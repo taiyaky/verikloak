@@ -172,4 +172,214 @@ RSpec.describe Verikloak::Middleware do
       expect(last_response.status).to eq 200
     end
   end
+
+  context "option passthrough and decoder reuse" do
+    let(:decoder) { instance_double("Verikloak::TokenDecoder") }
+  
+    before do
+      allow(Verikloak::TokenDecoder).to receive(:new).and_return(decoder)
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "ok" })
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:cached).and_return([{ "kid" => "dummy" }])
+      # Keep fetched_at constant to allow decoder cache reuse
+      fixed_time = Time.now
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetched_at).and_return(fixed_time)
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
+    end
+  
+    it "passes leeway and token_verify_options to TokenDecoder.new" do
+      custom_mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        leeway: 15,
+        token_verify_options: { verify_iat: false, leeway: 5 }
+      )
+  
+      # Expect the constructor to receive merged options including our overrides
+      expect(Verikloak::TokenDecoder).to receive(:new).with(
+        hash_including(
+          jwks: kind_of(Array),
+          issuer: "https://example.com/",
+          audience: "my-client-id",
+          leeway: 15,
+          options: hash_including(verify_iat: false, leeway: 5)
+        )
+      ).and_return(decoder)
+  
+      request = Rack::MockRequest.new(custom_mw)
+      request.get("/", "HTTP_AUTHORIZATION" => "Bearer abc.def.ghi")
+    end
+  
+    it "reuses TokenDecoder instance when JWKS is unchanged (same fetched_at)" do
+      # With constant fetched_at, TokenDecoder.new should be called once for multiple requests
+      expect(Verikloak::TokenDecoder).to receive(:new).once.and_return(decoder)
+  
+      header "Authorization", "Bearer token1"
+      get "/"
+      expect(last_response.status).to eq 200
+  
+      header "Authorization", "Bearer token2"
+      get "/"
+      expect(last_response.status).to eq 200
+    end
+  
+    it "rebuilds TokenDecoder when JWKS fetched_at changes" do
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
+      t0 = Time.now
+      t1 = t0 + 1
+      # fetched_at changes between requests → decoder cache invalidated
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetched_at).and_return(t0, t1)
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:cached).and_return([{ "kid" => "dummy" }])
+  
+      expect(Verikloak::TokenDecoder).to receive(:new).twice.and_return(decoder)
+  
+      header "Authorization", "Bearer tokenA"
+      get "/"
+      expect(last_response.status).to eq 200
+  
+      header "Authorization", "Bearer tokenB"
+      get "/"
+      expect(last_response.status).to eq 200
+    end
+  end
+  
+  context "connection injection to JWKS cache" do
+    it "passes injected Faraday connection into JwksCache.new" do
+      conn = Faraday.new
+      # Verify that our connection object is passed into JwksCache.new by middleware
+      expect(Verikloak::JwksCache).to receive(:new).with(
+        hash_including(jwks_uri: "https://example.com/jwks", connection: conn)
+      ).and_call_original
+  
+      custom_mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        connection: conn
+      )
+  
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:cached).and_return([{ "kid" => "dummy" }])
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
+      allow(Verikloak::TokenDecoder).to receive(:new).and_return(instance_double("Verikloak::TokenDecoder", decode!: { "sub" => "ok" }))
+  
+      request = Rack::MockRequest.new(custom_mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer abc.def.ghi")
+      expect(res.status).to eq 200
+    end
+  end
+
+  context "skip_paths wildcard behavior" do
+    it "skips exactly '/' when skip_paths includes only '/'" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        skip_paths: ['/']
+      )
+      request = Rack::MockRequest.new(mw)
+
+      # Root is skipped (no auth required)
+      res = request.get("/")
+      expect(res.status).to eq 200
+      expect(res["WWW-Authenticate"]).to be_nil
+
+      # Non-root still requires auth and returns 401 when header is missing
+      res2 = request.get("/not-root")
+      expect(res2.status).to eq 401
+      expect(res2["WWW-Authenticate"]).to match(/Bearer/)
+    end
+
+    it "skips a prefix and all of its subpaths when listed with /* in skip_paths" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        skip_paths: ['/', '/rails/*', '/public/src'] # '/rails/*' matches '/rails' and '/rails/...'
+      )
+      request = Rack::MockRequest.new(mw)
+
+      res1 = request.get("/")
+      res2 = request.get("/rails")
+      res3 = request.get("/rails/api/v1/notes")
+      res4 = request.get("/public/src")
+
+      [res1, res2, res3, res4].each do |r|
+        expect(r.status).to eq 200
+        expect(r["WWW-Authenticate"]).to be_nil
+      end
+
+      # A nearby but different prefix is not skipped
+      res5 = request.get("/public/health")
+      res6 = request.get("/public/src/html")
+      res7 = request.get("/pub")
+      [res5, res6, res7].each do |r|
+        expect(r.status).to eq 401
+        expect(r["WWW-Authenticate"]).to match(/Bearer/)
+      end
+    end
+  end
+
+  context "WWW-Authenticate header details" do
+    it "includes Bearer error and description when Authorization header is missing" do
+      header "Authorization", nil
+      get "/"
+      expect(last_response.status).to eq 401
+      www = last_response.headers["WWW-Authenticate"]
+      expect(www).to include("Bearer")
+      expect(www).to include('error="missing_authorization_header"')
+      expect(www).to match(/error_description="[^"]+"/)
+    end
+
+    it "includes Bearer error and description for invalid token" do
+      allow(decoder).to receive(:decode!)
+        .and_raise(Verikloak::TokenDecoderError.new("JWT decode failed", code: "invalid_token"))
+
+      header "Authorization", "Bearer bad.token"
+      get "/"
+      expect(last_response.status).to eq 401
+      www = last_response.headers["WWW-Authenticate"]
+      expect(www).to include("Bearer")
+      expect(www).to include('error="invalid_token"')
+      expect(www).to include('error_description="JWT decode failed"')
+    end
+  end
+
+  context "token_verify_options influencing outcome" do
+    it "returns 401 normally for expired token but 200 when verify_expiration: false is provided" do
+      # Build two middleware instances: default (should 401) and relaxed (should 200)
+      default_mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id"
+      )
+      relaxed_mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        token_verify_options: { verify_expiration: false }
+      )
+
+      # Discovery and JWKS behave the same for both
+      allow_any_instance_of(Verikloak::Discovery).to receive(:fetch!)
+        .and_return({ "issuer" => "https://example.com/", "jwks_uri" => "https://example.com/jwks" })
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:cached).and_return([{"kid" => "dummy"}])
+
+      # TokenDecoder.new should receive options; based on options, we return different doubles
+      allow(Verikloak::TokenDecoder).to receive(:new) do |args|
+        if args[:options].is_a?(Hash) && args[:options][:verify_expiration] == false
+          instance_double("Verikloak::TokenDecoder", decode!: { "sub" => "ok" })
+        else
+          err = Verikloak::TokenDecoderError.new("Token has expired", code: "expired_token")
+          instance_double("Verikloak::TokenDecoder").tap do |d|
+            allow(d).to receive(:decode!).and_raise(err)
+          end
+        end
+      end
+
+      # Default: 401 expired
+      res1 = Rack::MockRequest.new(default_mw).get("/", "HTTP_AUTHORIZATION" => "Bearer expired")
+      expect(res1.status).to eq 401
+      expect(res1["WWW-Authenticate"]).to include('error="expired_token"')
+
+      # Relaxed: 200 OK because verify_expiration: false is applied
+      res2 = Rack::MockRequest.new(relaxed_mw).get("/", "HTTP_AUTHORIZATION" => "Bearer expired")
+      expect(res2.status).to eq 200
+      expect(res2["WWW-Authenticate"]).to be_nil
+    end
+  end
 end

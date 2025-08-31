@@ -53,21 +53,44 @@ config.middleware.use Verikloak::Middleware,
 
 #### Handling Authentication Failures
 
-By default, invalid or missing tokens will raise a `Verikloak::Errors::InvalidToken` error.  
-In a Rails app, you can rescue this globally and return a consistent JSON response:
+When you use the Rack middleware, authentication failures are automatically converted into JSON error responses (for example, `401` for token issues, `503` for JWKS/discovery errors). In most cases **you do not need to add custom `rescue_from` handlers** in Rails controllers.
+
+If you use Verikloak components directly (bypassing the Rack middleware) or prefer centralized error handling, rescue from the base class `Verikloak::Error`. You can also match subclasses such as `Verikloak::TokenDecoderError`, `Verikloak::DiscoveryError`, or `Verikloak::JwksCacheError` depending on your needs:
 
 ```ruby
 class ApplicationController < ActionController::API
-  rescue_from Verikloak::Errors::InvalidToken do |e|
-    render json: { error: e.message }, status: :unauthorized
+  rescue_from Verikloak::Error do |e|
+    status =
+      case e
+      when Verikloak::TokenDecoderError
+        :unauthorized
+      when Verikloak::DiscoveryError, Verikloak::JwksCacheError
+        :service_unavailable
+      else
+        :unauthorized
+      end
+
+    render json: { error: e.class.name, message: e.message }, status: status
   end
 end
 ```
 
-This ensures clients always receive a structured `401 Unauthorized` response.
+This ensures that even if you bypass the middleware, clients still receive
+structured error responses.
+
+> **Note:** When the Rack middleware is enabled, it already renders JSON error responses.
+> The `rescue_from` example above is only necessary if you bypass the middleware or want custom behavior.
 
 ---
+#### Error Hierarchy
 
+All Verikloak errors inherit from `Verikloak::Error`:
+
+- `Verikloak::TokenDecoderError` – token parsing/verification (`401 Unauthorized`)
+- `Verikloak::DiscoveryError` – OIDC discovery fetch/parse (`503 Service Unavailable`)
+- `Verikloak::JwksCacheError` – JWKS fetch/parse/cache (`503 Service Unavailable`)
+- `Verikloak::MiddlewareError` – header/infra issues surfaced by the middleware (usually `401`, sometimes `503`)
+---
 #### Recommended: use environment variables in production
 
 ```ruby
@@ -210,7 +233,7 @@ Verikloak returns JSON error responses in a consistent format with structured er
 | `discovery_redirect_error` | 503 Service Unavailable   | Discovery response was a redirect without a valid Location header                           |
 | `internal_server_error`    | 500 Internal Server Error | Unexpected internal error (catch-all)                                                        |
 
-> Note: The `decode_with_public_key` method ensures consistent error codes for all JWT verification failures.  
+> **Note:** The `decode_with_public_key` method ensures consistent error codes for all JWT verification failures.  
 > It may raise `invalid_signature`, `unsupported_algorithm`, `expired_token`, `invalid_issuer`, `invalid_audience`, or `not_yet_valid` depending on the verification outcome.
 
 For a full list of error cases and detailed explanations, please see the [ERRORS.md](ERRORS.md) file.
@@ -224,26 +247,87 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `skip_paths`    | No       | Array of paths or wildcards to skip authentication, e.g. `['/', '/health', '/public/*']`. **Note:** Regex patterns are not supported. |
 | `discovery`     | No       | Inject custom Discovery instance (advanced/testing) |
 | `jwks_cache`    | No       | Inject custom JwksCache instance (advanced/testing) |
+| `leeway`       | No       | Clock skew tolerance (seconds) applied during JWT verification. Defaults to `TokenDecoder::DEFAULT_LEEWAY`. |
+| `token_verify_options` | No | Hash of advanced JWT verification options passed through to TokenDecoder. For example: `{ verify_iat: false, leeway: 10, algorithms: ["RS256"] }`. If both `leeway:` and `token_verify_options[:leeway]` are set, the latter takes precedence. |
+| `connection`   | No       | Inject a Faraday::Connection used for both Discovery and JWKS fetches. Allows unified timeout, retry, and headers. |
 
 #### Option: `skip_paths`
+
+Plain paths are exact-match only, while `/*` at the end enables prefix matching.
 
 `skip_paths` lets you specify paths (or wildcard patterns) where authentication should be **skipped**.  
 For example:
 
 ```ruby
-skip_paths: ['/', '/health', '/public/*', '/rails/*']
+skip_paths: ['/', '/health', '/rails/*', '/public/src']
 ```
 - `'/'` matches only the root path.
-- `'/foo/*'` matches `/foo` and any subpath like `/foo/bar` or `/foo/bar/baz`.
-- `'/api/public'` matches **only** `/api/public` (for subpaths, use `'/api/public/*'`).
+- `'/health'` matches **only** `/health` (for subpaths, use `'/health/*'`).
 - `'/rails/*'` matches `/rails` itself as well as `/rails/foo`, `/rails/foo/bar`, etc.
+- `'/public/src'` matches `/public/src`, but does **not** match `/public`, any subpath like `/public/src/html` or other siblings like `/public/css`.
 
 Paths **not matched** by any `skip_paths` entry will require a valid JWT.
 
 **Note:** Regex patterns are not supported. Only literal paths and `*` wildcards are allowed.  
 Internally, `*` expands to match nested paths, so patterns like `/rails/*` are valid. This differs from regex — for example, `'/rails'` alone matches only `/rails`, while `'/rails/*'` covers both `/rails` and deeper subpaths.
 
+#### Customizing Faraday for Discovery and JWKS
+
+Both `Discovery` and `JwksCache` accept a `Faraday::Connection`.  
+This allows you to configure timeouts, retries, logging, and shared headers:
+
+```ruby
+connection = Faraday.new(request: { timeout: 5 }) do |f|
+  f.response :logger
+end
+
+config.middleware.use Verikloak::Middleware,
+  discovery_url: ENV["DISCOVERY_URL"],
+  audience: ENV["CLIENT_ID"],
+  jwks_cache: Verikloak::JwksCache.new(
+    jwks_uri: "https://example.com/realms/myrealm/protocol/openid-connect/certs",
+    connection: connection
+  )
+```
+This makes it easy to apply consistent Faraday settings across both discovery and JWKS fetches.
+
+```ruby
+# Alternatively, you can pass the connection directly to the middleware:
+config.middleware.use Verikloak::Middleware,
+  discovery_url: ENV["DISCOVERY_URL"],
+  audience: ENV["CLIENT_ID"],
+  connection: connection
+```
+
+#### Customizing token verification (leeway and options)
+
+You can fine-tune how JWTs are verified by setting `leeway` or providing advanced options via `token_verify_options`. For example:
+
+```ruby
+config.middleware.use Verikloak::Middleware,
+  discovery_url: ENV["DISCOVERY_URL"],
+  audience: ENV["CLIENT_ID"],
+  leeway: 30, # allow 30s clock skew
+  token_verify_options: {
+    verify_iat: true,
+    verify_expiration: true,
+    verify_not_before: true,
+    # algorithms: ["RS256"] # override algorithms if needed
+    # leeway: 10            # this overrides the top-level leeway
+  }
+```
+
+- `leeway:` sets the default skew tolerance in seconds.
+- `token_verify_options:` is passed directly to TokenDecoder (and ultimately to `JWT.decode`).
+- If both are set, `token_verify_options[:leeway]` takes precedence.
+
 ---
+
+#### Performance note
+
+Internally, Verikloak caches `TokenDecoder` instances per JWKS fetch to avoid reinitializing
+them on every request. This improves performance while still ensuring that keys are
+revalidated when JWKS is refreshed.
 
 ## Architecture
 

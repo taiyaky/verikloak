@@ -249,4 +249,86 @@ RSpec.describe Verikloak::JwksCache do
     allow(Time).to receive(:now).and_return(t0 + 10 + 121)
     expect(cache.stale?).to eq(true)
   end
+
+  # --- Injected Faraday connection behaviors ---
+  it "uses the injected Faraday connection (test adapter) for HTTP requests" do
+    stubs = Faraday::Adapter::Test::Stubs.new
+    conn  = Faraday.new do |f|
+      f.adapter :test, stubs
+    end
+
+    stubs.get(jwks_uri) do |env|
+      expect(env.url.to_s).to eq(jwks_uri)
+      [
+        200,
+        { "Content-Type" => "application/json", "ETag" => 'W/"abc123"' },
+        valid_jwks
+      ]
+    end
+
+    cache = described_class.new(jwks_uri: jwks_uri, connection: conn)
+    keys = cache.fetch!
+
+    expect(keys).to be_an(Array)
+    expect(keys.first["kid"]).to eq("test-key")
+    stubs.verify_stubbed_calls
+  end
+
+  it "revalidation uses If-None-Match via injected connection" do
+    stubs = Faraday::Adapter::Test::Stubs.new
+    conn  = Faraday.new { |f| f.adapter :test, stubs }
+
+    # 1st: 200 with ETag
+    stubs.get(jwks_uri) do
+      [
+        200,
+        { "Content-Type" => "application/json", "ETag" => 'W/"abc123"' },
+        valid_jwks
+      ]
+    end
+
+    cache = described_class.new(jwks_uri: jwks_uri, connection: conn)
+    cache.fetch!
+
+    # 2nd: expect If-None-Match header to be sent; respond 304
+    stubs.get(jwks_uri) do |env|
+      expect(env.request_headers["If-None-Match"]).to eq('W/"abc123"')
+      [304, {}, ""]
+    end
+
+    expect(cache.fetch!).to eq(cache.cached)
+    stubs.verify_stubbed_calls
+  end
+
+  it "maps Faraday::TimeoutError from injected connection to jwks_fetch_failed" do
+    stubs = Faraday::Adapter::Test::Stubs.new
+    conn  = Faraday.new { |f| f.adapter :test, stubs }
+
+    stubs.get(jwks_uri) { raise Faraday::TimeoutError, "timeout" }
+
+    cache = described_class.new(jwks_uri: jwks_uri, connection: conn)
+    expect { cache.fetch! }.to raise_error(Verikloak::JwksCacheError) { |e|
+      expect(e.code).to eq("jwks_fetch_failed")
+      expect(e.message).to match(/Connection failed|timeout/i)
+    }
+
+    stubs.verify_stubbed_calls
+  end
+
+  it "sends custom headers configured on injected Faraday connection" do
+    stubs = Faraday::Adapter::Test::Stubs.new
+    conn  = Faraday.new do |f|
+      f.headers["User-Agent"] = "verikloak/spec"
+      f.adapter :test, stubs
+    end
+
+    stubs.get(jwks_uri) do |env|
+      expect(env.request_headers["User-Agent"]).to eq("verikloak/spec")
+      [200, { "ETag" => 'W/"ua1"', "Content-Type" => "application/json" }, valid_jwks]
+    end
+
+    cache = described_class.new(jwks_uri: jwks_uri, connection: conn)
+    cache.fetch!
+    stubs.verify_stubbed_calls
+  end
 end

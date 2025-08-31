@@ -36,7 +36,7 @@ Metrics/PerceivedComplexity:
   Max: 12                  # Allow perceived complexity up to 15
 
 Metrics/ParameterLists:
-  Max: 6                   # Allow up to 6 method parameters
+  Max: 10                  # Allow up to 10 method parameters
 
 Metrics/ClassLength:
   Max: 150               # Relax class length a bit to accommodate documentation and small helpers

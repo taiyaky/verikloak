@@ -28,15 +28,22 @@ module Verikloak
   #
   # @see #fetch!
   # @see #cached
+  #
+  # ## Dependency Injection
+  # Pass a preconfigured `Faraday::Connection` via `connection:` to control timeouts,
+  # adapters, and shared headers (kept consistent with Discovery).
+  #   `JwksCache.new(jwks_uri: "...", connection: Faraday.new { |f| f.request :retry })`
   class JwksCache
     # @param jwks_uri [String] HTTPS URL of the JWKS endpoint
+    # @param connection [Faraday::Connection, nil] Optional Faraday connection for HTTP requests
     # @raise [JwksCacheError] if the URI is not an HTTP(S) URL
-    def initialize(jwks_uri:)
+    def initialize(jwks_uri:, connection: nil)
       unless jwks_uri.is_a?(String) && jwks_uri.strip.match?(%r{^https?://})
         raise JwksCacheError.new('Invalid JWKS URI: must be a non-empty HTTP(S) URL', code: 'jwks_fetch_failed')
       end
 
       @jwks_uri    = jwks_uri
+      @connection  = connection || Faraday.new
       @cached_keys = nil
       @etag        = nil
       @fetched_at  = nil
@@ -56,7 +63,7 @@ module Verikloak
         # Build conditional request headers (ETag-based)
         headers  = build_conditional_headers
         # Perform HTTP GET request
-        response = Faraday.get(@jwks_uri, nil, headers)
+        response = @connection.get(@jwks_uri, nil, headers)
         # Handle HTTP response according to status code
         handle_response(response)
       end
@@ -71,6 +78,10 @@ module Verikloak
     # Timestamp of the last successful fetch or revalidation.
     # @return [Time, nil]
     attr_reader :fetched_at
+
+    # Injected Faraday connection (for testing and shared config across the gem)
+    # @return [Faraday::Connection]
+    attr_reader :connection
 
     # Whether the cache is considered stale.
     #

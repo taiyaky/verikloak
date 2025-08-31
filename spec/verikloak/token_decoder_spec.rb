@@ -91,7 +91,11 @@ RSpec.describe Verikloak::TokenDecoder do
       token = encode
       
       header, payload, sig = token.split(".")
-      tampered = [header, "#{payload}X", sig].join(".")
+      # Decode payload, change a claim, and re-encode to keep base64url valid (avoid ruby-jwt base64 deprecation warnings)
+      payload_json = JSON.parse(JWT::Base64.url_decode(payload))
+      payload_json["aud"] = "tampered-aud"
+      tampered_payload = JWT::Base64.url_encode(payload_json.to_json)
+      tampered = [header, tampered_payload, sig].join(".")
       expect { decoder.decode!(tampered) }.to raise_error(Verikloak::TokenDecoderError) { |e|
         expect(e.code).to eq("invalid_token").or eq("invalid_signature")
       }
@@ -164,6 +168,50 @@ RSpec.describe Verikloak::TokenDecoder do
       expect { decoder.decode!(token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
         expect(e.code).to eq("invalid_token")
         expect(e.message).to match(/iat|in the future/i)
+      }
+    end
+  end
+
+  context "verification options (leeway and flags)" do
+    it "prefers options[:leeway] over top-level leeway" do
+      # Top-level leeway is 30 in subject(:decoder), but we pass options[:leeway] = 5
+      opt_decoder = described_class.new(
+        jwks: jwks, issuer: issuer, audience: audience, leeway: 30, options: { leeway: 5 }
+      )
+      token = encode(nbf: now + 6) # 6s in the future: allowed by 30, but should fail with options leeway 5
+      expect { opt_decoder.decode!(token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
+        expect(e.code).to eq("not_yet_valid")
+      }
+    end
+  
+    it "allows future iat when verify_iat is disabled via options" do
+      opt_decoder = described_class.new(
+        jwks: jwks, issuer: issuer, audience: audience, leeway: 0, options: { verify_iat: false }
+      )
+      token = encode(iat: now + 120) # far in the future
+      expect(opt_decoder.decode!(token)).to be_a(Hash)
+    end
+  
+    it "allows expired token when verify_expiration is disabled via options" do
+      opt_decoder = described_class.new(
+        jwks: jwks, issuer: issuer, audience: audience, options: { verify_expiration: false }
+      )
+      token = encode(exp: now - 10)
+      expect(opt_decoder.decode!(token)).to be_a(Hash)
+    end
+  
+    it "still enforces RS256 even if algorithms option includes RS256" do
+      opt_decoder = described_class.new(
+        jwks: jwks, issuer: issuer, audience: audience, options: { algorithms: ["RS256"] }
+      )
+      token = encode # RS256
+      expect(opt_decoder.decode!(token)).to be_a(Hash)
+  
+      # If someone tries to pass HS256 in algorithms, our header guard (alg != RS256) must still block it.
+      payload = { iss: issuer, aud: audience, exp: now + 300, nbf: now - 10, iat: now }
+      hs256_token = JWT.encode(payload, "secret", "HS256", { kid: "kid-hs", alg: "HS256", typ: "JWT" })
+      expect { opt_decoder.decode!(hs256_token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
+        expect(e.code).to eq("unsupported_algorithm")
       }
     end
   end
