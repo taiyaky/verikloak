@@ -20,9 +20,9 @@ RSpec.describe Verikloak::JwksCache do
     }.to_json
   end
 
-  # Test fetching and caching valid JWKS on first request
-  it "fetches and caches valid JWKS on first request" do
-    # Stub HTTP GET to return valid JWKS with ETag header
+  # Test fetching and caching valid JWKs on first request
+  it "fetches and caches valid JWKs on first request" do
+    # Stub HTTP GET to return valid JWKs with ETag header
     stub_request(:get, jwks_uri)
       .to_return(status: 200, body: valid_jwks, headers: { "Content-Type" => "application/json", "ETag" => "W/\"abc123\"" })
 
@@ -37,7 +37,7 @@ RSpec.describe Verikloak::JwksCache do
 
   # Test returning cached keys when server responds with 304 Not Modified
   it "returns cached keys on 304 Not Modified" do
-    # Stub initial fetch with valid JWKS and ETag
+    # Stub initial fetch with valid JWKs and ETag
     stub_request(:get, jwks_uri)
       .to_return(status: 200, body: valid_jwks, headers: { "ETag" => "W/\"abc123\"" })
 
@@ -53,8 +53,8 @@ RSpec.describe Verikloak::JwksCache do
     expect(keys).to eq(cache.cached)
   end
 
-  # Test error raised when JWKS response is not valid JSON
-  it "raises error when JWKS response is not valid JSON" do
+  # Test error raised when JWKs response is not valid JSON
+  it "raises error when JWKs response is not valid JSON" do
     # Stub HTTP GET to return invalid JSON body
     stub_request(:get, jwks_uri)
       .to_return(status: 200, body: "not-json")
@@ -65,8 +65,8 @@ RSpec.describe Verikloak::JwksCache do
     }.to raise_error(Verikloak::JwksCacheError, /not valid JSON/)
   end
 
-  # Test error raised when JWKS response does not contain 'keys' array
-  it "raises error when JWKS response is missing keys array" do
+  # Test error raised when JWKs response does not contain 'keys' array
+  it "raises error when JWKs response is missing keys array" do
     # Stub HTTP GET to return JSON without keys array
     stub_request(:get, jwks_uri)
       .to_return(status: 200, body: { foo: "bar" }.to_json)
@@ -94,7 +94,7 @@ RSpec.describe Verikloak::JwksCache do
     expect {
       described_class.new(jwks_uri: "ftp://bad")
     }.to raise_error(Verikloak::JwksCacheError) { |e|
-      expect(e.message).to match(/Invalid JWKS URI/)
+      expect(e.message).to match(/Invalid JWKs URI/)
       expect(e.code).to eq("jwks_fetch_failed")
     }
   end
@@ -106,7 +106,7 @@ RSpec.describe Verikloak::JwksCache do
     expect {
       cache.fetch!
     }.to raise_error(Verikloak::JwksCacheError) { |e|
-      expect(e.message).to match(/Failed to fetch JWKS: status 418/)
+      expect(e.message).to match(/Failed to fetch JWKs: status 418/)
       expect(e.code).to eq("jwks_fetch_failed")
     }
   end
@@ -118,7 +118,7 @@ RSpec.describe Verikloak::JwksCache do
     expect {
       cache.fetch!
     }.to raise_error(Verikloak::JwksCacheError) { |e|
-      expect(e.message).to match(/JWKS cache is empty/)
+      expect(e.message).to match(/JWKs cache is empty/)
       expect(e.code).to eq("jwks_cache_miss")
     }
   end
@@ -171,7 +171,7 @@ RSpec.describe Verikloak::JwksCache do
     expect {
       cache.fetch!
     }.to raise_error(Verikloak::JwksCacheError) { |e|
-      expect(e.message).to match(/JWKS fetch failed: boom/)
+      expect(e.message).to match(/JWKs fetch failed: boom/)
       expect(e.code).to eq("jwks_fetch_failed")
     }
   end

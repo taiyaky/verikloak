@@ -67,11 +67,11 @@ RSpec.describe Verikloak::TokenDecoder do
       }
     end
 
-    it "raises invalid_token when kid is not found in JWKS" do
+    it "raises invalid_token when kid is not found in JWKs" do
       token = encode({}, { kid: "unknown" })
       expect { decoder.decode!(token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
         expect(e.code).to eq("invalid_token")
-        expect(e.message).to match(/not found in JWKS/)
+        expect(e.message).to match(/not found in JWKs/)
       }
     end
 

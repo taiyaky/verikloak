@@ -9,7 +9,7 @@ This document is a *developer reference* reflecting the **actual behavior** of V
 >
 > - Exceptions inheriting from `Verikloak::Error` → mapped by type:
 >   - Token / Authorization errors → **401 Unauthorized** with JSON and `WWW-Authenticate` header including `error` and `error_description`.
->   - Discovery / JWKS fetch/parse errors → **503 Service Unavailable** with JSON using split error codes:
+>   - Discovery / JWKs fetch/parse errors → **503 Service Unavailable** with JSON using split error codes:
 >     - `jwks_fetch_failed` or `jwks_parse_failed`
 >     - `discovery_metadata_fetch_failed` or `discovery_metadata_invalid`
 > - Other unexpected exceptions (`StandardError`) → **500 Internal Server Error** with JSON `{"error":"internal_server_error","message":"An unexpected error occurred"}`
@@ -38,7 +38,7 @@ Raised during JWT verification (`Verikloak::TokenDecoder`).
 |------------------------|-------------------------------------------------------------|----------------|
 | `unsupported_algorithm`| `Missing or unsupported algorithm`                          | JWT header `alg` is not `RS256` or missing |
 | `invalid_token`        | `JWT header missing 'kid'`                                  | JWT header has no `kid` |
-| `invalid_token`        | `Key with kid=<kid> not found in JWKS`                      | No matching JWK by `kid` |
+| `invalid_token`        | `Key with kid=<kid> not found in JWKs`                      | No matching JWK by `kid` |
 | `invalid_token`        | `Unsupported key type '<kty>'. Only RSA is supported`       | Non-RSA JWK |
 | `invalid_token`        | `Failed to import JWK: <detail>`                            | RSA key import failed |
 | `expired_token`        | `Token has expired`                                         | `JWT::ExpiredSignature` |
@@ -53,12 +53,12 @@ Raised during JWT verification (`Verikloak::TokenDecoder`).
 
 ## DiscoveryError and JwksCacheError
 
-Errors raised during fetching or parsing of the OIDC discovery document or JWKS are wrapped and surfaced as 503 Service Unavailable by the middleware.
+Errors raised during fetching or parsing of the OIDC discovery document or JWKs are wrapped and surfaced as 503 Service Unavailable by the middleware.
 
 | JSON `error`                  | `message` example                                   |
 |------------------------------|-----------------------------------------------------|
-| `jwks_fetch_failed`           | `Failed to fetch JWKS: Net::ReadTimeout`            |
-| `jwks_parse_failed`           | `Failed to parse JWKS: JSON::ParserError`           |
+| `jwks_fetch_failed`           | `Failed to fetch JWKs: Net::ReadTimeout`            |
+| `jwks_parse_failed`           | `Failed to parse JWKs: JSON::ParserError`           |
 | `discovery_metadata_fetch_failed` | `Failed to fetch discovery document: 404 Not Found` |
 | `discovery_metadata_invalid`  | `Failed to parse discovery document: unexpected format` |
 | `discovery_redirect_error`    | `Redirect without Location header`, `Too many redirects (max 3)`, or `Redirect Location is invalid: ...` |
@@ -68,13 +68,13 @@ Errors raised during fetching or parsing of the OIDC discovery document or JWKS 
 ## MiddlewareError
 
 Raised directly by the middleware in certain conditions.  
-**HTTP Status:** 401 Unauthorized for client-side errors (e.g., Authorization header issues), 503 Service Unavailable for infrastructure issues (e.g., JWKS cache miss).
+**HTTP Status:** 401 Unauthorized for client-side errors (e.g., Authorization header issues), 503 Service Unavailable for infrastructure issues (e.g., JWKs cache miss).
 
 | JSON `error`              | `message` example                                  |
 |---------------------------|----------------------------------------------------|
 | `missing_authorization_header` | `Missing Authorization header`                   |
 | `invalid_authorization_header` | `Invalid Authorization header format`            |
-| `jwks_cache_miss`         | `JWKS cache is empty, cannot verify token`         |
+| `jwks_cache_miss`         | `JWKs cache is empty, cannot verify token`         |
 
 ---
 
