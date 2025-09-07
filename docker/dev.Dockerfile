@@ -23,7 +23,7 @@ RUN mkdir -p lib/verikloak
 COPY lib/verikloak/version.rb lib/verikloak/version.rb
 COPY Gemfile Gemfile.lock ./
 
- # Faster, more reliable bundler installs
+# Faster, more reliable bundler installs
 ARG BUNDLE_FROZEN=1
 ENV BUNDLE_JOBS=4 BUNDLE_RETRY=3 BUNDLE_FROZEN=$BUNDLE_FROZEN
 RUN bundle install
