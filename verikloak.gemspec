@@ -19,7 +19,9 @@ Gem::Specification.new do |spec|
   spec.files         = Dir['lib/**/*.rb'] + %w[README.md LICENSE CHANGELOG.md]
   spec.require_paths = ['lib']
 
-  spec.required_ruby_version = '>= 3.0'
+  # Align with project/tooling and Dependabot's resolver
+  # Bundler versions Dependabot selects now require Ruby >= 3.1
+  spec.required_ruby_version = '>= 3.1'
 
   # Runtime dependencies
   spec.add_dependency 'faraday', '>= 2.0', '< 3.0'
