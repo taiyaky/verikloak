@@ -87,7 +87,7 @@ jobs:
         run: |
           mkdir -p tmp artifacts
           # Run inside container; ensure pipeline returns non-zero on RuboCop failure
-          docker compose run --rm -u 0:0 dev bash -lc 'set -o pipefail; bundle exec rubocop | tee tmp/rubocop.log'
+          docker compose run --rm -u 0:0 dev bash -c 'set -o pipefail; bundle exec rubocop | tee tmp/rubocop.log'
           status=$?
           # Always collect the log for artifacts
           cp tmp/rubocop.log artifacts/ || true
