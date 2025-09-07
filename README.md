@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/taiyaky/verikloak/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/taiyaky/verikloak/actions/workflows/ci.yml)
 [![Gem Version](https://img.shields.io/gem/v/verikloak)](https://rubygems.org/gems/verikloak)
-![Ruby Version](https://img.shields.io/badge/ruby-%3E%3D%203.0-blue)
+![Ruby Version](https://img.shields.io/badge/ruby-%3E%3D%203.1-blue)
 [![Downloads](https://img.shields.io/gem/dt/verikloak)](https://rubygems.org/gems/verikloak)
 
 A lightweight Rack middleware for verifying Keycloak JWT access tokens via OpenID Connect.
