@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.3] - 2025-09-15
+
+### Changed
+- Relax `jwt` runtime dependency to `>= 2.7, < 4.0` to allow jwt 3.x (PR #11).
+
+### Chore
+- Bump dev dependency `rubocop` to 1.80.2 (PR #13).
+- Bump dev dependency `rubocop-rspec` to 3.7.0 (PR #12).
+
+---
+
 ## [0.1.2] - 2025-08-31
 
 ### Added
