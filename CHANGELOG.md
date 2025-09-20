@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.4] - 2025-09-20
+
+### Chore
+- Bump dev dependency `rexml` to 3.4.2 (PR #15).
+
+---
+
 ## [0.1.3] - 2025-09-15
 
 ### Changed
