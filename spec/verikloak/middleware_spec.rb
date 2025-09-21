@@ -37,6 +37,64 @@ RSpec.describe Verikloak::Middleware do
     allow(Verikloak::TokenDecoder).to receive(:new).and_return(decoder)
   end
 
+  context "configuration knobs" do
+    before do
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "user1" })
+    end
+
+    it "allows customizing env keys for user and token" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        token_env_key: "custom.token",
+        user_env_key: "custom.user"
+      )
+
+      env = Rack::MockRequest.env_for("/", "HTTP_AUTHORIZATION" => "Bearer custom.token")
+      status, = mw.call(env)
+
+      expect(status).to eq 200
+      expect(env["custom.user"]).to eq({ "sub" => "user1" })
+      expect(env["custom.token"]).to eq("custom.token")
+    end
+
+    it "allows customizing the WWW-Authenticate realm" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        realm: "api.example"
+      )
+
+      status, headers, = mw.call(Rack::MockRequest.env_for("/"))
+
+      expect(status).to eq 401
+      expect(headers["WWW-Authenticate"]).to include("realm=\"api.example\"")
+    end
+
+    it "logs unexpected errors to injected logger" do
+      failing_app = ->(_env) { raise "boom" }
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "user1" })
+      logger = double("Logger")
+      expect(logger).to receive(:error)
+        .with(a_string_including("[verikloak] Internal error: RuntimeError - boom"))
+      expect(logger).to receive(:error)
+        .with(a_string_matching(/middleware_spec\.rb:\d+/))
+
+      mw = described_class.new(failing_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        logger: logger
+      )
+
+      env = Rack::MockRequest.env_for("/", "HTTP_AUTHORIZATION" => "Bearer token")
+      status, headers, body = mw.call(env)
+
+      expect(status).to eq 500
+      expect(headers["Content-Type"]).to eq("application/json")
+      expect(body.join).to include("internal_server_error")
+    end
+  end
+
   context "when token is valid" do
     # Test scenario: Valid token is provided, middleware should authenticate and pass request downstream
     before do
@@ -49,6 +107,7 @@ RSpec.describe Verikloak::Middleware do
       get "/"
       expect(last_response.status).to eq 200
       expect(last_request.env["verikloak.user"]).to eq({ "sub" => "user1" })
+      expect(last_request.env["verikloak.token"]).to eq("valid.token")
     end
   end
 
