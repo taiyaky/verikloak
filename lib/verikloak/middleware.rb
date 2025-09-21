@@ -178,7 +178,15 @@ module Verikloak
       source = @audience_source
       value = if source.respond_to?(:call)
                 callable = source
-                arity = callable.respond_to?(:arity) ? callable.arity : callable.method(:call).arity
+                arity = if callable.respond_to?(:arity)
+                          callable.arity
+                        else
+                          begin
+                            callable.method(:call).arity
+                          rescue NameError
+                            1
+                          end
+                        end
                 arity.zero? ? callable.call : callable.call(env)
               else
                 source
