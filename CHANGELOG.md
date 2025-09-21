@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.5] - 2025-09-21
+
+### Added
+- Specs for `Verikloak::HTTP.default_connection`, ensuring retry middleware and timeout defaults stay in sync.
+
+### Changed
+- Middleware audience callables now handle zero-arity and BasicObject-style implementations without relying on `method(:call)`.
+- README documents the shared `Verikloak::HTTP.default_connection` helper for reuse/customization.
+
+### Dependencies
+- Declare `faraday-retry` as a runtime dependency so the default HTTP connection can load the retry middleware.
+
+---
+
 ## [0.1.4] - 2025-09-20
 
 ### Chore
