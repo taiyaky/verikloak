@@ -50,12 +50,13 @@ RSpec.describe Verikloak::Middleware do
         user_env_key: "custom.user"
       )
 
-      env = Rack::MockRequest.env_for("/", "HTTP_AUTHORIZATION" => "Bearer custom.token")
+      token_value = "mytesttoken123"
+      env = Rack::MockRequest.env_for("/", "HTTP_AUTHORIZATION" => "Bearer #{token_value}")
       status, = mw.call(env)
 
       expect(status).to eq 200
       expect(env["custom.user"]).to eq({ "sub" => "user1" })
-      expect(env["custom.token"]).to eq("custom.token")
+      expect(env["custom.token"]).to eq(token_value)
     end
 
     it "allows customizing the WWW-Authenticate realm" do

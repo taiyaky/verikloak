@@ -366,6 +366,7 @@ module Verikloak
     # @param token_verify_options [Hash] Additional JWT verification options passed through
     #   to TokenDecoder.
     #   e.g., { verify_iat: false, leeway: 10 }
+    # rubocop:disable Metrics/ParameterLists
     def initialize(app,
                    discovery_url:,
                    audience:,
@@ -396,6 +397,7 @@ module Verikloak
 
       compile_skip_paths(skip_paths)
     end
+    # rubocop:enable Metrics/ParameterLists
 
     # Rack entrypoint.
     #
@@ -500,25 +502,42 @@ module Verikloak
       message = "[verikloak] Internal error: #{error.class} - #{error.message}"
       backtrace = error.backtrace&.join("\n")
 
-      if @logger
-        if @logger.respond_to?(:error)
-          @logger.error(message)
-        elsif @logger.respond_to?(:warn)
-          @logger.warn(message)
-        end
-
-        if backtrace
-          if @logger.respond_to?(:debug)
-            @logger.debug(backtrace)
-          elsif @logger.respond_to?(:error)
-            @logger.error(backtrace)
-          elsif @logger.respond_to?(:warn)
-            @logger.warn(backtrace)
-          end
-        end
+      if logger_available?
+        log_with_logger(message, backtrace)
       else
         warn message
         warn backtrace if backtrace
+      end
+    end
+
+    def logger_available?
+      return false unless @logger
+
+      @logger.respond_to?(:error) || @logger.respond_to?(:warn) || @logger.respond_to?(:debug)
+    end
+
+    def log_with_logger(message, backtrace)
+      log_message(@logger, message)
+      log_backtrace(@logger, backtrace)
+    end
+
+    def log_message(logger, message)
+      if logger.respond_to?(:error)
+        logger.error(message)
+      elsif logger.respond_to?(:warn)
+        logger.warn(message)
+      end
+    end
+
+    def log_backtrace(logger, backtrace)
+      return unless backtrace
+
+      if logger.respond_to?(:debug)
+        logger.debug(backtrace)
+      elsif logger.respond_to?(:error)
+        logger.error(backtrace)
+      elsif logger.respond_to?(:warn)
+        logger.warn(backtrace)
       end
     end
 
