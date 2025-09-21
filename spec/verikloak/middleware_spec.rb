@@ -94,6 +94,33 @@ RSpec.describe Verikloak::Middleware do
       expect(headers["Content-Type"]).to eq("application/json")
       expect(body.join).to include("internal_server_error")
     end
+
+    it "raises when token_env_key is blank" do
+      expect do
+        described_class.new(inner_app,
+          discovery_url: "https://example.com/.well-known/openid-configuration",
+          audience: "my-client-id",
+          token_env_key: " \t ")
+      end.to raise_error(ArgumentError, "token_env_key cannot be blank")
+    end
+
+    it "raises when user_env_key is blank" do
+      expect do
+        described_class.new(inner_app,
+          discovery_url: "https://example.com/.well-known/openid-configuration",
+          audience: "my-client-id",
+          user_env_key: "")
+      end.to raise_error(ArgumentError, "user_env_key cannot be blank")
+    end
+
+    it "raises when realm is blank" do
+      expect do
+        described_class.new(inner_app,
+          discovery_url: "https://example.com/.well-known/openid-configuration",
+          audience: "my-client-id",
+          realm: " ")
+      end.to raise_error(ArgumentError, "realm cannot be blank")
+    end
   end
 
   context "when token is valid" do
