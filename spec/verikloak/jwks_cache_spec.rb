@@ -213,6 +213,26 @@ RSpec.describe Verikloak::JwksCache do
     expect(cache.stale?).to eq(true)
   end
 
+  it "returns cached keys without hitting network while TTL is fresh" do
+    stub_request(:get, jwks_uri)
+      .to_return(
+        status: 200,
+        body: valid_jwks,
+        headers: { "ETag" => 'W/"ttl-keep"', "Cache-Control" => "max-age=60" }
+      )
+
+    cache = described_class.new(jwks_uri: jwks_uri)
+    t0 = Time.now
+    allow(Time).to receive(:now).and_return(t0)
+
+    cache.fetch!
+
+    allow(Time).to receive(:now).and_return(t0 + 30)
+
+    expect(cache.fetch!).to eq(cache.cached)
+    expect(WebMock).to have_requested(:get, jwks_uri).once
+  end
+
   # 304 Not Modified may update Cache-Control and should extend TTL from revalidation time
   it "updates TTL on 304 Not Modified with Cache-Control header" do
     # Initial 200 with ETag and max-age=60
@@ -238,15 +258,15 @@ RSpec.describe Verikloak::JwksCache do
         headers: { "Cache-Control" => "max-age=120" }
       )
 
-    # Revalidation at t0 + 10s
-    allow(Time).to receive(:now).and_return(t0 + 10)
+    # Revalidation once TTL has expired (t0 + 61s)
+    allow(Time).to receive(:now).and_return(t0 + 61)
     cache.fetch!
 
-    # After revalidation, TTL is 120 from the new fetched_at (t0 + 10)
-    allow(Time).to receive(:now).and_return(t0 + 10 + 119)
+    # After revalidation, TTL is 120 from the new fetched_at (t0 + 61)
+    allow(Time).to receive(:now).and_return(t0 + 61 + 119)
     expect(cache.stale?).to eq(false)
 
-    allow(Time).to receive(:now).and_return(t0 + 10 + 121)
+    allow(Time).to receive(:now).and_return(t0 + 61 + 121)
     expect(cache.stale?).to eq(true)
   end
 

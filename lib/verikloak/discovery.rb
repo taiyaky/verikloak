@@ -4,6 +4,8 @@ require 'faraday'
 require 'json'
 require 'uri'
 
+require 'verikloak/http'
+
 module Verikloak
   # Fetches and caches the OpenID Connect Discovery document.
   #
@@ -39,10 +41,10 @@ module Verikloak
     REQUIRED_FIELDS = %w[jwks_uri issuer].freeze
 
     # @param discovery_url [String] The full URL to the `.well-known/openid-configuration`.
-    # @param connection [Faraday::Connection] Optional Faraday client (for DI/tests). Defaults to `Faraday.new`.
+    # @param connection [Faraday::Connection] Optional Faraday client (for DI/tests).
     # @param cache_ttl [Integer] Cache TTL in seconds (default: 3600).
     # @raise [DiscoveryError] when `discovery_url` is not a valid HTTP(S) URL
-    def initialize(discovery_url:, connection: Faraday.new, cache_ttl: 3600)
+    def initialize(discovery_url:, connection: Verikloak::HTTP.default_connection, cache_ttl: 3600)
       unless discovery_url.is_a?(String) && discovery_url.strip.match?(%r{^https?://})
         raise DiscoveryError.new('Invalid discovery URL: must be a non-empty HTTP(S) URL',
                                  code: 'invalid_discovery_url')

@@ -266,6 +266,133 @@ RSpec.describe Verikloak::Middleware do
     end
   end
 
+  context "audience callable arity handling" do
+    it "supports zero-arity callables without passing env" do
+      zero_callable = double("ZeroAudience")
+      expect(zero_callable).to receive(:call).with(no_args).and_return("zero-client")
+      allow(zero_callable).to receive(:arity).and_return(0)
+
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "ok" })
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: zero_callable
+      )
+
+      request = Rack::MockRequest.new(mw)
+      response = request.get("/profile", "HTTP_AUTHORIZATION" => "Bearer token")
+
+      expect(response.status).to eq 200
+    end
+
+    it "falls back when callable hides arity and rejects env argument" do
+      methodless_class = Class.new(BasicObject) do
+        def initialize(value)
+          @value = value
+          @calls = []
+        end
+
+        def call(*args)
+          @calls << args
+          if args.any?
+            ::Kernel.raise ::ArgumentError, "wrong number of arguments (given #{args.length}, expected 0)"
+          end
+          @value
+        end
+
+        def calls
+          @calls
+        end
+
+        def respond_to?(name, include_private = false)
+          name == :call || name == :respond_to? || name == :calls
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          name == :call || name == :respond_to? || name == :calls
+        end
+      end
+
+      callable = methodless_class.new("methodless-client")
+
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "ok" })
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: callable
+      )
+
+      request = Rack::MockRequest.new(mw)
+      response = request.get("/dashboard", "HTTP_AUTHORIZATION" => "Bearer token")
+
+      expect(response.status).to eq 200
+      expect(callable.calls.length).to eq(2)
+      first_args = callable.calls.first
+      expect(first_args.length).to eq(1)
+      expect(first_args.first).to be_a(::Hash)
+      expect(callable.calls.last).to eq([])
+    end
+  end
+
+  context "dynamic audience resolution" do
+    let(:audience_proc) do
+      lambda do |env|
+        env['PATH_INFO'] == '/admin' ? 'admin-client' : 'user-client'
+      end
+    end
+
+    before do
+      allow(Verikloak::TokenDecoder).to receive(:new).and_call_original
+    end
+
+    it "evaluates callable per request and caches decoders per audience" do
+      decoder_user = instance_double("Verikloak::TokenDecoder")
+      decoder_admin = instance_double("Verikloak::TokenDecoder")
+      allow(decoder_user).to receive(:decode!).and_return({ "sub" => "user" })
+      allow(decoder_admin).to receive(:decode!).and_return({ "sub" => "admin" })
+
+      expect(Verikloak::TokenDecoder).to receive(:new)
+        .with(hash_including(audience: 'user-client'))
+        .once
+        .and_return(decoder_user)
+      expect(Verikloak::TokenDecoder).to receive(:new)
+        .with(hash_including(audience: 'admin-client'))
+        .once
+        .and_return(decoder_admin)
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: audience_proc
+      )
+
+      request = Rack::MockRequest.new(mw)
+      res_user = request.get("/profile", "HTTP_AUTHORIZATION" => "Bearer token-user")
+      expect(res_user.status).to eq 200
+
+      res_admin = request.get("/admin", "HTTP_AUTHORIZATION" => "Bearer token-admin")
+      expect(res_admin.status).to eq 200
+
+      res_user_again = request.get("/profile", "HTTP_AUTHORIZATION" => "Bearer token-user-2")
+      expect(res_user_again.status).to eq 200
+    end
+
+    it "returns 401 when callable resolves to blank audience" do
+      blank_proc = ->(_env) { "" }
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: blank_proc
+      )
+
+      request = Rack::MockRequest.new(mw)
+      response = request.get("/profile", "HTTP_AUTHORIZATION" => "Bearer token")
+
+      expect(response.status).to eq 401
+      body = JSON.parse(response.body)
+      expect(body["error"]).to eq("invalid_audience")
+      expect(body["message"]).to match(/Audience is blank/)
+    end
+  end
+
   context "skip_paths wildcard behavior" do
     it "skips exactly '/' when skip_paths includes only '/'" do
       mw = described_class.new(inner_app,

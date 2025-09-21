@@ -5,6 +5,8 @@ require 'json'
 require 'set'
 require 'faraday'
 
+require 'verikloak/http'
+
 module Verikloak
   # @api private
   #
@@ -106,12 +108,12 @@ module Verikloak
 
     # Returns a cached TokenDecoder instance for current inputs.
     # Cache key uses issuer, audience, leeway, token_verify_options, and JWKs fetched_at timestamp.
-    def decoder_for
+    def decoder_for(audience)
       keys = @jwks_cache.cached
       fetched_at = @jwks_cache.respond_to?(:fetched_at) ? @jwks_cache.fetched_at : nil
       cache_key = [
         @issuer,
-        @audience,
+        audience,
         @leeway,
         @token_verify_options,
         fetched_at
@@ -120,7 +122,7 @@ module Verikloak
         @decoder_cache[cache_key] ||= TokenDecoder.new(
           jwks: keys,
           issuer: @issuer,
-          audience: @audience,
+          audience: audience,
           leeway: @leeway,
           options: @token_verify_options
         )
@@ -142,14 +144,16 @@ module Verikloak
     # @param token [String]
     # @return [Hash] decoded JWT claims
     # @raise [Verikloak::Error] bubbles up verification/fetch errors for centralized handling
-    def decode_token(token)
+    def decode_token(env, token)
       ensure_jwks_cache!
       if @jwks_cache.cached.nil? || @jwks_cache.cached.empty?
         raise MiddlewareError.new('JWKs cache is empty, cannot verify token', code: 'jwks_cache_miss')
       end
 
+      audience = resolve_audience(env)
+
       # First attempt
-      decoder = decoder_for
+      decoder = decoder_for(audience)
 
       begin
         decoder.decode!(token)
@@ -160,9 +164,76 @@ module Verikloak
         refresh_jwks!
 
         # Rebuild decoder with refreshed keys and try once more.
-        decoder = decoder_for
+        decoder = decoder_for(audience)
         decoder.decode!(token)
       end
+    end
+
+    # Resolves the expected audience for the current request.
+    #
+    # @param env [Hash] Rack environment.
+    # @return [String, Array<String>] The expected audience value.
+    # @raise [MiddlewareError] when the resolved audience is blank.
+    def resolve_audience(env)
+      source = @audience_source
+      value = if source.respond_to?(:call)
+                callable = source
+                arity = callable.respond_to?(:arity) ? callable.arity : safe_callable_arity(callable)
+                call_with_optional_env(callable, env, arity)
+              else
+                source
+              end
+
+      raise MiddlewareError.new('Audience is blank for the request', code: 'invalid_audience') if value.nil?
+
+      if value.is_a?(Array)
+        raise MiddlewareError.new('Audience is blank for the request', code: 'invalid_audience') if value.empty?
+
+        return value
+      end
+
+      normalized = value.to_s
+      raise MiddlewareError.new('Audience is blank for the request', code: 'invalid_audience') if normalized.empty?
+
+      normalized
+    end
+
+    # Invokes the audience callable, passing the Rack env only when required.
+    # Falls back to a zero-argument invocation if the callable raises
+    # `ArgumentError` due to an unexpected argument.
+    #
+    # @param callable [#call] Audience resolver callable.
+    # @param env [Hash] Rack environment.
+    # @param arity [Integer, nil] Callable arity when known, nil otherwise.
+    # @return [Object] Audience value returned by the callable.
+    # @raise [ArgumentError] when the callable raises for reasons other than arity mismatch.
+    def call_with_optional_env(callable, env, arity)
+      return callable.call if arity&.zero?
+
+      callable.call(env)
+    rescue ArgumentError => e
+      raise unless arity.nil? && wrong_arity_error?(e)
+
+      callable.call
+    end
+
+    # Safely obtains a callable's arity, returning nil when `#method(:call)`
+    # cannot be resolved (e.g., BasicObject-based objects).
+    #
+    # @param callable [#call]
+    # @return [Integer, nil]
+    def safe_callable_arity(callable)
+      callable.method(:call).arity
+    rescue NameError
+      nil
+    end
+
+    # Returns true when the ArgumentError message indicates a wrong arity.
+    #
+    # @param error [ArgumentError]
+    # @return [Boolean]
+    def wrong_arity_error?(error)
+      error.message.include?('wrong number of arguments')
     end
 
     # Ensures that discovery metadata and JWKs cache are initialized and up-to-date.
@@ -280,11 +351,13 @@ module Verikloak
 
     # @param app [#call] downstream Rack app
     # @param discovery_url [String] OIDC discovery endpoint URL
-    # @param audience [String] expected `aud` claim
+    # @param audience [String, #call] Expected `aud` claim. When a callable is provided it
+    #   receives the Rack env and may return a String or Array of audiences.
     # @param skip_paths [Array<String>] literal paths or wildcard patterns to bypass auth
     # @param discovery [Discovery, nil] custom discovery instance (for DI/tests)
     # @param jwks_cache [JwksCache, nil] custom JWKs cache instance (for DI/tests)
-    # @param connection [Faraday::Connection, nil] Optional injected Faraday connection (defaults to Faraday.new)
+    # @param connection [Faraday::Connection, nil] Optional injected Faraday connection
+    #   (defaults to {Verikloak::HTTP.default_connection})
     # @param leeway [Integer] Clock skew tolerance in seconds for token verification (delegated to TokenDecoder)
     # @param token_verify_options [Hash] Additional JWT verification options passed through
     #   to TokenDecoder.
@@ -298,12 +371,12 @@ module Verikloak
                    connection: nil,
                    leeway: Verikloak::TokenDecoder::DEFAULT_LEEWAY,
                    token_verify_options: {})
-      @app           = app
-      @audience      = audience
-      @discovery     = discovery || Discovery.new(discovery_url: discovery_url)
-      @jwks_cache    = jwks_cache
-      @connection    = connection || Faraday.new
-      @leeway        = leeway
+      @app             = app
+      @connection      = connection || Verikloak::HTTP.default_connection
+      @audience_source = audience
+      @discovery       = discovery || Discovery.new(discovery_url: discovery_url, connection: @connection)
+      @jwks_cache      = jwks_cache
+      @leeway = leeway
       @token_verify_options = token_verify_options || {}
       @issuer        = nil
       @mutex         = Mutex.new
@@ -344,7 +417,7 @@ module Verikloak
     # @param token [String]
     # @return [Array(Integer, Hash, Array<String>)] Rack response triple
     def handle_request(env, token)
-      claims = decode_token(token)
+      claims = decode_token(env, token)
       env['verikloak.token'] = token
       env['verikloak.user']  = claims
       @app.call(env)

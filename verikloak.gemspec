@@ -25,6 +25,7 @@ Gem::Specification.new do |spec|
 
   # Runtime dependencies
   spec.add_dependency 'faraday', '>= 2.0', '< 3.0'
+  spec.add_dependency 'faraday-retry', '>= 2.0', '< 3.0'
   spec.add_dependency 'json', '~> 2.6'
   spec.add_dependency 'jwt', '>= 2.7', '< 4.0'
 
