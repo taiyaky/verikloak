@@ -349,6 +349,10 @@ module Verikloak
     include SkipPathMatcher
     include MiddlewareTokenVerification
 
+    DEFAULT_REALM = 'verikloak'
+    DEFAULT_TOKEN_ENV_KEY = 'verikloak.token'
+    DEFAULT_USER_ENV_KEY = 'verikloak.user'
+
     # @param app [#call] downstream Rack app
     # @param discovery_url [String] OIDC discovery endpoint URL
     # @param audience [String, #call] Expected `aud` claim. When a callable is provided it
@@ -362,6 +366,7 @@ module Verikloak
     # @param token_verify_options [Hash] Additional JWT verification options passed through
     #   to TokenDecoder.
     #   e.g., { verify_iat: false, leeway: 10 }
+    # rubocop:disable Metrics/ParameterLists
     def initialize(app,
                    discovery_url:,
                    audience:,
@@ -370,7 +375,11 @@ module Verikloak
                    jwks_cache: nil,
                    connection: nil,
                    leeway: Verikloak::TokenDecoder::DEFAULT_LEEWAY,
-                   token_verify_options: {})
+                   token_verify_options: {},
+                   token_env_key: DEFAULT_TOKEN_ENV_KEY,
+                   user_env_key: DEFAULT_USER_ENV_KEY,
+                   realm: DEFAULT_REALM,
+                   logger: nil)
       @app             = app
       @connection      = connection || Verikloak::HTTP.default_connection
       @audience_source = audience
@@ -381,9 +390,14 @@ module Verikloak
       @issuer        = nil
       @mutex         = Mutex.new
       @decoder_cache = {}
+      @token_env_key = normalize_env_key(token_env_key, 'token_env_key')
+      @user_env_key  = normalize_env_key(user_env_key, 'user_env_key')
+      @realm         = normalize_realm(realm)
+      @logger        = logger
 
       compile_skip_paths(skip_paths)
     end
+    # rubocop:enable Metrics/ParameterLists
 
     # Rack entrypoint.
     #
@@ -418,8 +432,8 @@ module Verikloak
     # @return [Array(Integer, Hash, Array<String>)] Rack response triple
     def handle_request(env, token)
       claims = decode_token(env, token)
-      env['verikloak.token'] = token
-      env['verikloak.user']  = claims
+      env[@token_env_key] = token
+      env[@user_env_key]  = claims
       @app.call(env)
     end
 
@@ -475,7 +489,7 @@ module Verikloak
       headers = { 'Content-Type' => 'application/json' }
       if status == 401
         headers['WWW-Authenticate'] =
-          %(Bearer realm="verikloak", error="#{code}", error_description="#{message.gsub('"', '\\"')}")
+          %(Bearer realm="#{@realm}", error="#{code}", error_description="#{message.gsub('"', '\\"')}")
       end
       [status, headers, [body]]
     end
@@ -485,8 +499,62 @@ module Verikloak
     # @param error [Exception]
     # @return [void]
     def log_internal_error(error)
-      warn "[verikloak] Internal error: #{error.class} - #{error.message}"
-      warn error.backtrace.join("\n") if error.backtrace
+      message = "[verikloak] Internal error: #{error.class} - #{error.message}"
+      backtrace = error.backtrace&.join("\n")
+
+      if logger_available?
+        log_with_logger(message, backtrace)
+      else
+        warn message
+        warn backtrace if backtrace
+      end
+    end
+
+    def logger_available?
+      return false unless @logger
+
+      @logger.respond_to?(:error) || @logger.respond_to?(:warn) || @logger.respond_to?(:debug)
+    end
+
+    def log_with_logger(message, backtrace)
+      log_message(@logger, message)
+      log_backtrace(@logger, backtrace)
+    end
+
+    def log_message(logger, message)
+      if logger.respond_to?(:error)
+        logger.error(message)
+      elsif logger.respond_to?(:warn)
+        logger.warn(message)
+      end
+    end
+
+    def log_backtrace(logger, backtrace)
+      return unless backtrace
+
+      if logger.respond_to?(:debug)
+        logger.debug(backtrace)
+      elsif logger.respond_to?(:error)
+        logger.error(backtrace)
+      elsif logger.respond_to?(:warn)
+        logger.warn(backtrace)
+      end
+    end
+
+    def normalize_env_key(value, option_name)
+      normalized = value.to_s.strip
+      raise ArgumentError, "#{option_name} cannot be blank" if normalized.empty?
+
+      normalized
+    end
+
+    def normalize_realm(value)
+      return DEFAULT_REALM if value.nil?
+
+      normalized = value.to_s.strip
+      raise ArgumentError, 'realm cannot be blank' if normalized.empty?
+
+      normalized
     end
   end
 end

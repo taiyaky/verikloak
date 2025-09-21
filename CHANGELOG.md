@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2025-09-22
+
+### Added
+- Middleware options `token_env_key` and `user_env_key` for customizing where the token and decoded claims are stored in the Rack env.
+- Middleware option `realm` to change the `WWW-Authenticate` realm value emitted on 401 responses.
+- Middleware option `logger` so unexpected internal errors can be sent to the host application's logger instead of STDERR.
+
+### Changed
+- Update gem version to 0.2.0 to stay aligned with the rest of the Verikloak ecosystem gems.
+
+---
+
 ## [0.1.5] - 2025-09-21
 
 ### Added

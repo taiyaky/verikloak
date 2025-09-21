@@ -94,6 +94,26 @@ config.middleware.use Verikloak::Middleware,
 ```
 This makes the configuration secure and flexible across environments.
 
+#### Advanced middleware options
+
+`Verikloak::Middleware` exposes a few optional knobs that help integrate with
+different Rack stacks:
+
+- `token_env_key` (default: `"verikloak.token"`) — where the raw JWT is stored in the Rack env
+- `user_env_key` (default: `"verikloak.user"`) — where decoded claims are stored
+- `realm` (default: `"verikloak"`) — value used in the `WWW-Authenticate` header for 401 responses
+- `logger` — an object responding to `error` (and optionally `debug`) that receives unexpected 500-level failures
+
+```ruby
+config.middleware.use Verikloak::Middleware,
+  discovery_url: ENV.fetch("DISCOVERY_URL"),
+  audience: ENV.fetch("CLIENT_ID"),
+  token_env_key: "rack.session.token",
+  user_env_key: "rack.session.claims",
+  realm: "my-api",
+  logger: Rails.logger
+```
+
 ### Accessing claims in controllers
 
 Once the middleware is enabled, Verikloak adds the decoded token and raw JWT to the Rack environment.  
