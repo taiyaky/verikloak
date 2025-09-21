@@ -3,6 +3,8 @@
 require 'faraday'
 require 'json'
 
+require 'verikloak/http'
+
 module Verikloak
   # Caches and revalidates JSON Web Key Sets (JWKs) fetched from a remote endpoint.
   #
@@ -43,7 +45,7 @@ module Verikloak
       end
 
       @jwks_uri    = jwks_uri
-      @connection  = connection || Faraday.new
+      @connection  = connection || Verikloak::HTTP.default_connection
       @cached_keys = nil
       @etag        = nil
       @fetched_at  = nil
@@ -59,6 +61,8 @@ module Verikloak
     # @return [Array&lt;Hash&gt;] the cached JWKs after fetch/revalidation
     # @raise [JwksCacheError] on HTTP failures, invalid JSON, invalid structure, or cache miss on 304
     def fetch!
+      return @cached_keys if fresh_by_ttl?
+
       with_error_handling do
         # Build conditional request headers (ETag-based)
         headers  = build_conditional_headers

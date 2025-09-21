@@ -266,6 +266,65 @@ RSpec.describe Verikloak::Middleware do
     end
   end
 
+  context "dynamic audience resolution" do
+    let(:audience_proc) do
+      lambda do |env|
+        env['PATH_INFO'] == '/admin' ? 'admin-client' : 'user-client'
+      end
+    end
+
+    before do
+      allow(Verikloak::TokenDecoder).to receive(:new).and_call_original
+    end
+
+    it "evaluates callable per request and caches decoders per audience" do
+      decoder_user = instance_double("Verikloak::TokenDecoder")
+      decoder_admin = instance_double("Verikloak::TokenDecoder")
+      allow(decoder_user).to receive(:decode!).and_return({ "sub" => "user" })
+      allow(decoder_admin).to receive(:decode!).and_return({ "sub" => "admin" })
+
+      expect(Verikloak::TokenDecoder).to receive(:new)
+        .with(hash_including(audience: 'user-client'))
+        .once
+        .and_return(decoder_user)
+      expect(Verikloak::TokenDecoder).to receive(:new)
+        .with(hash_including(audience: 'admin-client'))
+        .once
+        .and_return(decoder_admin)
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: audience_proc
+      )
+
+      request = Rack::MockRequest.new(mw)
+      res_user = request.get("/profile", "HTTP_AUTHORIZATION" => "Bearer token-user")
+      expect(res_user.status).to eq 200
+
+      res_admin = request.get("/admin", "HTTP_AUTHORIZATION" => "Bearer token-admin")
+      expect(res_admin.status).to eq 200
+
+      res_user_again = request.get("/profile", "HTTP_AUTHORIZATION" => "Bearer token-user-2")
+      expect(res_user_again.status).to eq 200
+    end
+
+    it "returns 401 when callable resolves to blank audience" do
+      blank_proc = ->(_env) { "" }
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: blank_proc
+      )
+
+      request = Rack::MockRequest.new(mw)
+      response = request.get("/profile", "HTTP_AUTHORIZATION" => "Bearer token")
+
+      expect(response.status).to eq 401
+      body = JSON.parse(response.body)
+      expect(body["error"]).to eq("invalid_audience")
+      expect(body["message"]).to match(/Audience is blank/)
+    end
+  end
+
   context "skip_paths wildcard behavior" do
     it "skips exactly '/' when skip_paths includes only '/'" do
       mw = described_class.new(inner_app,
