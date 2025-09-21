@@ -258,15 +258,15 @@ RSpec.describe Verikloak::JwksCache do
         headers: { "Cache-Control" => "max-age=120" }
       )
 
-    # Revalidation at t0 + 10s
-    allow(Time).to receive(:now).and_return(t0 + 10)
+    # Revalidation once TTL has expired (t0 + 61s)
+    allow(Time).to receive(:now).and_return(t0 + 61)
     cache.fetch!
 
-    # After revalidation, TTL is 120 from the new fetched_at (t0 + 10)
-    allow(Time).to receive(:now).and_return(t0 + 10 + 119)
+    # After revalidation, TTL is 120 from the new fetched_at (t0 + 61)
+    allow(Time).to receive(:now).and_return(t0 + 61 + 119)
     expect(cache.stale?).to eq(false)
 
-    allow(Time).to receive(:now).and_return(t0 + 10 + 121)
+    allow(Time).to receive(:now).and_return(t0 + 61 + 121)
     expect(cache.stale?).to eq(true)
   end
 

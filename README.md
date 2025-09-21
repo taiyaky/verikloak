@@ -272,30 +272,33 @@ The callable may also return an Array of audiences when a route is valid for mul
 #### Customizing Faraday for Discovery and JWKs
 
 Both `Discovery` and `JwksCache` accept a `Faraday::Connection`.
-Verikloak ships with a conservative default connection (5s timeout, 2s open timeout, retries for transient errors). If you need additional middleware such as logging, metrics, or custom adapters you can still inject your own connection:
+Verikloak ships with a helper you can re-use anywhere:
 
 ```ruby
-connection = Faraday.new(request: { timeout: 5 }) do |f|
+connection = Verikloak::HTTP.default_connection
+```
+
+The default connection enables retries (via `faraday-retry`) for idempotent GET requests and applies conservative timeouts (5s request / 2s open). If you need to add extra middleware, adapters, or instrumentation, you can build on top of the defaults:
+
+```ruby
+connection = Faraday.new(request: { timeout: 10 }) do |f|
+  f.request :retry, Verikloak::HTTP::RETRY_OPTIONS
   f.response :logger
+  f.adapter Faraday.default_adapter
 end
 
 config.middleware.use Verikloak::Middleware,
   discovery_url: ENV["DISCOVERY_URL"],
   audience: ENV["CLIENT_ID"],
-  jwks_cache: Verikloak::JwksCache.new(
-    jwks_uri: "https://example.com/realms/myrealm/protocol/openid-connect/certs",
-    connection: connection
-  )
-```
-This makes it easy to apply consistent Faraday settings across both discovery and JWKs fetches.
-
-```ruby
-# Alternatively, you can pass the connection directly to the middleware:
-config.middleware.use Verikloak::Middleware,
-  discovery_url: ENV["DISCOVERY_URL"],
-  audience: ENV["CLIENT_ID"],
   connection: connection
+
+# Or pass the connection through to a shared JwksCache instance
+jwks_cache = Verikloak::JwksCache.new(
+  jwks_uri: "https://example.com/realms/myrealm/protocol/openid-connect/certs",
+  connection: connection
+)
 ```
+This makes it easy to keep HTTP settings consistent across discovery, JWK refreshes, and any other Verikloak components you wire together.
 
 #### Customizing token verification (leeway and options)
 
@@ -333,6 +336,7 @@ Verikloak consists of modular components, each with a focused responsibility:
 |----------------|--------------------------------------------------------|--------------|
 | `Middleware`    | Rack-compatible entry point for token validation     | Rack layer   |
 | `Discovery`     | Fetches OIDC discovery metadata (`.well-known`)      | Network layer|
+| `HTTP`          | Provides shared Faraday connection with retries/timeouts | Network layer|
 | `JwksCache`     | Fetches & caches JWKs public keys (with ETag)        | Cache layer  |
 | `TokenDecoder`  | Decodes and verifies JWTs (signature, exp, nbf, iss, aud) | Crypto layer |
 | `Errors`        | Centralized error hierarchy                          | Core layer   |

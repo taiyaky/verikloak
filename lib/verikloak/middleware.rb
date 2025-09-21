@@ -178,28 +178,62 @@ module Verikloak
       source = @audience_source
       value = if source.respond_to?(:call)
                 callable = source
-                arity = callable.respond_to?(:arity) ? callable.arity : callable.method(:call).arity
-                arity.zero? ? callable.call : callable.call(env)
+                arity = callable.respond_to?(:arity) ? callable.arity : safe_callable_arity(callable)
+                call_with_optional_env(callable, env, arity)
               else
                 source
               end
 
-      if value.nil?
-        raise MiddlewareError.new('Audience is blank for the request', code: 'invalid_audience')
-      end
+      raise MiddlewareError.new('Audience is blank for the request', code: 'invalid_audience') if value.nil?
 
       if value.is_a?(Array)
         raise MiddlewareError.new('Audience is blank for the request', code: 'invalid_audience') if value.empty?
+
         return value
       end
 
-      normalized = value.is_a?(Symbol) ? value.to_s : value
-      normalized = normalized.to_s if !normalized.is_a?(String)
-      if normalized.empty?
-        raise MiddlewareError.new('Audience is blank for the request', code: 'invalid_audience')
-      end
+      normalized = value.to_s
+      raise MiddlewareError.new('Audience is blank for the request', code: 'invalid_audience') if normalized.empty?
 
       normalized
+    end
+
+    # Invokes the audience callable, passing the Rack env only when required.
+    # Falls back to a zero-argument invocation if the callable raises
+    # `ArgumentError` due to an unexpected argument.
+    #
+    # @param callable [#call] Audience resolver callable.
+    # @param env [Hash] Rack environment.
+    # @param arity [Integer, nil] Callable arity when known, nil otherwise.
+    # @return [Object] Audience value returned by the callable.
+    # @raise [ArgumentError] when the callable raises for reasons other than arity mismatch.
+    def call_with_optional_env(callable, env, arity)
+      return callable.call if arity&.zero?
+
+      callable.call(env)
+    rescue ArgumentError => e
+      raise unless arity.nil? && wrong_arity_error?(e)
+
+      callable.call
+    end
+
+    # Safely obtains a callable's arity, returning nil when `#method(:call)`
+    # cannot be resolved (e.g., BasicObject-based objects).
+    #
+    # @param callable [#call]
+    # @return [Integer, nil]
+    def safe_callable_arity(callable)
+      callable.method(:call).arity
+    rescue NameError
+      nil
+    end
+
+    # Returns true when the ArgumentError message indicates a wrong arity.
+    #
+    # @param error [ArgumentError]
+    # @return [Boolean]
+    def wrong_arity_error?(error)
+      error.message.include?('wrong number of arguments')
     end
 
     # Ensures that discovery metadata and JWKs cache are initialized and up-to-date.
@@ -342,7 +376,7 @@ module Verikloak
       @audience_source = audience
       @discovery       = discovery || Discovery.new(discovery_url: discovery_url, connection: @connection)
       @jwks_cache      = jwks_cache
-      @leeway        = leeway
+      @leeway = leeway
       @token_verify_options = token_verify_options || {}
       @issuer        = nil
       @mutex         = Mutex.new

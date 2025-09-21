@@ -266,6 +266,74 @@ RSpec.describe Verikloak::Middleware do
     end
   end
 
+  context "audience callable arity handling" do
+    it "supports zero-arity callables without passing env" do
+      zero_callable = double("ZeroAudience")
+      expect(zero_callable).to receive(:call).with(no_args).and_return("zero-client")
+      allow(zero_callable).to receive(:arity).and_return(0)
+
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "ok" })
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: zero_callable
+      )
+
+      request = Rack::MockRequest.new(mw)
+      response = request.get("/profile", "HTTP_AUTHORIZATION" => "Bearer token")
+
+      expect(response.status).to eq 200
+    end
+
+    it "falls back when callable hides arity and rejects env argument" do
+      methodless_class = Class.new(BasicObject) do
+        def initialize(value)
+          @value = value
+          @calls = []
+        end
+
+        def call(*args)
+          @calls << args
+          if args.any?
+            ::Kernel.raise ::ArgumentError, "wrong number of arguments (given #{args.length}, expected 0)"
+          end
+          @value
+        end
+
+        def calls
+          @calls
+        end
+
+        def respond_to?(name, include_private = false)
+          name == :call || name == :respond_to? || name == :calls
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          name == :call || name == :respond_to? || name == :calls
+        end
+      end
+
+      callable = methodless_class.new("methodless-client")
+
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "ok" })
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: callable
+      )
+
+      request = Rack::MockRequest.new(mw)
+      response = request.get("/dashboard", "HTTP_AUTHORIZATION" => "Bearer token")
+
+      expect(response.status).to eq 200
+      expect(callable.calls.length).to eq(2)
+      first_args = callable.calls.first
+      expect(first_args.length).to eq(1)
+      expect(first_args.first).to be_a(::Hash)
+      expect(callable.calls.last).to eq([])
+    end
+  end
+
   context "dynamic audience resolution" do
     let(:audience_proc) do
       lambda do |env|

@@ -6,9 +6,13 @@ require 'faraday/retry'
 module Verikloak
   # Internal HTTP helpers shared across components.
   module HTTP
+    # Default request timeout (seconds) for outbound discovery/JWKs calls.
     DEFAULT_TIMEOUT = 5
+    # Default open/read timeout (seconds) before establishing the HTTP connection.
     DEFAULT_OPEN_TIMEOUT = 2
 
+    # Retry middleware configuration used for idempotent GET requests.
+    # Retries on 429/5xx with exponential backoff and jitter.
     RETRY_OPTIONS = {
       max: 2,
       interval: 0.1,
