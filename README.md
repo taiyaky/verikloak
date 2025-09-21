@@ -1,4 +1,4 @@
-# Verikloak
+# verikloak
 
 [![CI](https://github.com/taiyaky/verikloak/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/taiyaky/verikloak/actions/workflows/ci.yml)
 [![Gem Version](https://img.shields.io/gem/v/verikloak)](https://rubygems.org/gems/verikloak)
@@ -9,8 +9,6 @@ A lightweight Rack middleware for verifying Keycloak JWT access tokens via OpenI
 
 Verikloak is a plug-and-play solution for Ruby (especially Rails API) apps that need to validate incoming `Bearer` tokens issued by Keycloak. It uses OpenID Connect Discovery and JWKs to fetch the public keys and verify JWT signatures securely.
 
----
-
 ## Features
 
 - OpenID Connect Discovery (`.well-known/openid-configuration`)
@@ -19,8 +17,6 @@ Verikloak is a plug-and-play solution for Ruby (especially Rails API) apps that 
 - `aud`, `iss`, `exp`, `nbf` claim validation
 - Rails/Rack middleware support
 - Faraday-based customizable HTTP layer
-
----
 
 ## Installation
 
@@ -35,8 +31,6 @@ Then install:
 ```bash
 bundle install
 ```
-
----
 
 ## Usage
 
@@ -81,7 +75,6 @@ structured error responses.
 > **Note:** When the Rack middleware is enabled, it already renders JSON error responses.
 > The `rescue_from` example above is only necessary if you bypass the middleware or want custom behavior.
 
----
 #### Error Hierarchy
 
 All Verikloak errors inherit from `Verikloak::Error`:
@@ -90,7 +83,7 @@ All Verikloak errors inherit from `Verikloak::Error`:
 - `Verikloak::DiscoveryError` – OIDC discovery fetch/parse (`503 Service Unavailable`)
 - `Verikloak::JwksCacheError` – JWKs fetch/parse/cache (`503 Service Unavailable`)
 - `Verikloak::MiddlewareError` – header/infra issues surfaced by the middleware (usually `401`, sometimes `503`)
----
+
 #### Recommended: use environment variables in production
 
 ```ruby
@@ -100,7 +93,7 @@ config.middleware.use Verikloak::Middleware,
   skip_paths: ['/', '/health', '/public/*', '/rails/*']
 ```
 This makes the configuration secure and flexible across environments.
----
+
 ### Accessing claims in controllers
 
 Once the middleware is enabled, Verikloak adds the decoded token and raw JWT to the Rack environment.  
@@ -117,7 +110,7 @@ class Api::V1::NotesController < ApplicationController
   end
 end
 ```
----
+
 ### Standalone Rack app
 
 ```ruby
@@ -133,7 +126,6 @@ run ->(env) {
   [200, { "Content-Type" => "application/json" }, [user.to_json]]
 }
 ```
----
 
 ## How It Works
 
@@ -148,8 +140,6 @@ run ->(env) {
    - `exp` (expiration)
    - `nbf` (not before)
 7. Makes the decoded payload available in `env["verikloak.user"]`
-
----
 
 ## Error Responses
 
@@ -314,8 +304,6 @@ config.middleware.use Verikloak::Middleware,
 - `token_verify_options:` is passed directly to TokenDecoder (and ultimately to `JWT.decode`).
 - If both are set, `token_verify_options[:leeway]` takes precedence.
 
----
-
 #### Performance note
 
 Internally, Verikloak caches `TokenDecoder` instances per JWKs fetch to avoid reinitializing
@@ -336,8 +324,6 @@ Verikloak consists of modular components, each with a focused responsibility:
 
 This separation enables better testing, modular reuse, and flexibility.
 
----
-
 ## Development (for contributors)
 
 Clone and install dependencies:
@@ -348,8 +334,6 @@ cd verikloak
 bundle install
 ```
 See **Testing** below to run specs and RuboCop. For releasing, see **Publishing**.
-
----
 
 ## Testing
 
@@ -362,40 +346,33 @@ To run the test suite locally:
 docker compose run --rm dev rspec
 docker compose run --rm dev rubocop
 ```
----
 
 ## Contributing
 
 Bug reports and pull requests are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
----
-
 ## Security
 
 If you find a security vulnerability, please follow the instructions in [SECURITY.md](SECURITY.md).
-
----
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
 
----
-
 ## Publishing (for maintainers)
 
 Gem release instructions are documented separately in [MAINTAINERS.md](MAINTAINERS.md).
-
----
 
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.
 
----
-
 ## References
 
-- [OpenID Connect Discovery 1.0 Spec](https://openid.net/specs/openid-connect-discovery-1_0.html)  
-- [Keycloak Documentation: Securing Apps](https://www.keycloak.org/docs/latest/securing_apps/#openid-connect)  
-- [JWT RFC 7519](https://datatracker.ietf.org/doc/html/rfc7519) 
+- [OpenID Connect Discovery 1.0 Spec](https://openid.net/specs/openid-connect-discovery-1_0.html)
+- [Keycloak Documentation: Securing Apps](https://www.keycloak.org/docs/latest/securing_apps/#openid-connect)
+- [JWT RFC 7519](https://datatracker.ietf.org/doc/html/rfc7519)
+- [verikloak-rails on RubyGems](https://rubygems.org/gems/verikloak-rails)
+- [verikloak-bff on RubyGems](https://rubygems.org/gems/verikloak-bff)
+- [verikloak-pundit on RubyGems](https://rubygems.org/gems/verikloak-pundit)
+- [verikloak-audience on RubyGems](https://rubygems.org/gems/verikloak-audience)
