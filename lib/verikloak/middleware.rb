@@ -119,13 +119,23 @@ module Verikloak
         fetched_at
       ].hash
       @mutex.synchronize do
-        @decoder_cache[cache_key] ||= TokenDecoder.new(
+        if (decoder = @decoder_cache[cache_key])
+          touch_decoder_cache(cache_key) if track_decoder_order?
+          return decoder
+        end
+
+        decoder = TokenDecoder.new(
           jwks: keys,
           issuer: @issuer,
           audience: audience,
           leeway: @leeway,
           options: @token_verify_options
         )
+
+        return decoder if @decoder_cache_limit&.zero?
+
+        prune_decoder_cache_if_needed
+        store_decoder_cache(cache_key, decoder)
       end
     end
 
@@ -178,8 +188,7 @@ module Verikloak
       source = @audience_source
       value = if source.respond_to?(:call)
                 callable = source
-                arity = callable.respond_to?(:arity) ? callable.arity : safe_callable_arity(callable)
-                call_with_optional_env(callable, env, arity)
+                call_with_optional_env(callable, env)
               else
                 source
               end
@@ -207,25 +216,18 @@ module Verikloak
     # @param arity [Integer, nil] Callable arity when known, nil otherwise.
     # @return [Object] Audience value returned by the callable.
     # @raise [ArgumentError] when the callable raises for reasons other than arity mismatch.
-    def call_with_optional_env(callable, env, arity)
-      return callable.call if arity&.zero?
+    def call_with_optional_env(callable, env)
+      params = callable_parameters(callable)
 
-      callable.call(env)
-    rescue ArgumentError => e
-      raise unless arity.nil? && wrong_arity_error?(e)
+      invocation_chain(params).each do |strategy|
+        begin
+          return strategy.call(callable, env)
+        rescue ArgumentError => e
+          raise unless wrong_arity_error?(e)
+        end
+      end
 
       callable.call
-    end
-
-    # Safely obtains a callable's arity, returning nil when `#method(:call)`
-    # cannot be resolved (e.g., BasicObject-based objects).
-    #
-    # @param callable [#call]
-    # @return [Integer, nil]
-    def safe_callable_arity(callable)
-      callable.method(:call).arity
-    rescue NameError
-      nil
     end
 
     # Returns true when the ArgumentError message indicates a wrong arity.
@@ -234,6 +236,81 @@ module Verikloak
     # @return [Boolean]
     def wrong_arity_error?(error)
       error.message.include?('wrong number of arguments')
+    end
+
+    def callable_parameters(callable)
+      callable.method(:call).parameters
+    rescue NameError
+      nil
+    end
+
+    def invocation_chain(params)
+      strategies = []
+
+      if accepts_keyword_env?(params)
+        strategies << ->(callable, env) { callable.call(env: env) }
+      elsif params.nil?
+        strategies << ->(callable, env) { callable.call(env: env) }
+      end
+
+      if accepts_positional_env?(params)
+        strategies << ->(callable, env) { callable.call(env) }
+      elsif params.nil?
+        strategies << ->(callable, env) { callable.call(env) }
+      end
+
+      if accepts_zero_arguments?(params)
+        strategies << ->(callable, _env) { callable.call }
+      elsif params.nil?
+        strategies << ->(callable, _env) { callable.call }
+      end
+
+      strategies.uniq
+    end
+
+    def accepts_keyword_env?(params)
+      return false if params.nil?
+
+      params.any? do |type, name|
+        type == :keyrest ||
+          ((type == :keyreq || type == :key) && (name.nil? || name == :env))
+      end
+    end
+
+    def accepts_positional_env?(params)
+      return false if params.nil?
+
+      params.any? { |type, _| %i[req opt rest].include?(type) }
+    end
+
+    def accepts_zero_arguments?(params)
+      return false if params.nil?
+
+      params.empty? || params.all? { |type, _| %i[opt key keyrest block].include?(type) }
+    end
+
+    def store_decoder_cache(cache_key, decoder)
+      @decoder_cache[cache_key] = decoder
+      touch_decoder_cache(cache_key) if track_decoder_order?
+      decoder
+    end
+
+    def prune_decoder_cache_if_needed
+      return unless track_decoder_order?
+
+      while @decoder_cache_order.length >= @decoder_cache_limit
+        oldest = @decoder_cache_order.shift
+        @decoder_cache.delete(oldest)
+      end
+    end
+
+    def touch_decoder_cache(cache_key)
+      @decoder_cache_order.delete(cache_key)
+      @decoder_cache_order << cache_key
+    end
+
+    def track_decoder_order?
+      @decoder_cache_limit && @decoder_cache_limit.positive?
     end
 
     # Ensures that discovery metadata and JWKs cache are initialized and up-to-date.
@@ -246,6 +323,7 @@ module Verikloak
     # @raise [Verikloak::DiscoveryError, Verikloak::JwksCacheError, Verikloak::MiddlewareError]
     def ensure_jwks_cache!
       @mutex.synchronize do
+        previous_keys_id = cached_keys_identity(@jwks_cache)
         if @jwks_cache.nil?
           config   = @discovery.fetch!
           @issuer  = config['issuer']
@@ -254,12 +332,36 @@ module Verikloak
         end
 
         @jwks_cache.fetch!
+        purge_decoder_cache_if_keys_changed(previous_keys_id)
       end
     rescue Verikloak::DiscoveryError, Verikloak::JwksCacheError => e
       # Re-raise so that specific error codes can be mapped in the middleware
       raise e
     rescue StandardError => e
       raise MiddlewareError.new("Failed to initialize JWKs cache: #{e.message}", code: 'jwks_fetch_failed')
+    end
+
+    def purge_decoder_cache_if_keys_changed(previous_keys_id)
+      current_id = cached_keys_identity(@jwks_cache)
+      if @last_cached_keys_id && current_id && @last_cached_keys_id != current_id
+        clear_decoder_cache
+      elsif previous_keys_id && current_id && previous_keys_id != current_id
+        clear_decoder_cache
+      end
+
+      @last_cached_keys_id = current_id if current_id
+    end
+
+    def cached_keys_identity(cache)
+      return unless cache&.respond_to?(:cached)
+
+      keys = cache.cached
+      keys.__id__ if keys
+    end
+
+    def clear_decoder_cache
+      @decoder_cache.clear
+      @decoder_cache_order.clear
     end
   end
 
@@ -367,6 +469,8 @@ module Verikloak
     #   to TokenDecoder.
     #   e.g., { verify_iat: false, leeway: 10 }
     # rubocop:disable Metrics/ParameterLists
+    DEFAULT_DECODER_CACHE_LIMIT = 128
+
     def initialize(app,
                    discovery_url:,
                    audience:,
@@ -376,6 +480,7 @@ module Verikloak
                    connection: nil,
                    leeway: Verikloak::TokenDecoder::DEFAULT_LEEWAY,
                    token_verify_options: {},
+                   decoder_cache_limit: DEFAULT_DECODER_CACHE_LIMIT,
                    token_env_key: DEFAULT_TOKEN_ENV_KEY,
                    user_env_key: DEFAULT_USER_ENV_KEY,
                    realm: DEFAULT_REALM,
@@ -387,9 +492,12 @@ module Verikloak
       @jwks_cache      = jwks_cache
       @leeway = leeway
       @token_verify_options = token_verify_options || {}
+      @decoder_cache_limit = normalize_decoder_cache_limit(decoder_cache_limit)
       @issuer        = nil
       @mutex         = Mutex.new
       @decoder_cache = {}
+      @decoder_cache_order = []
+      @last_cached_keys_id = nil
       @token_env_key = normalize_env_key(token_env_key, 'token_env_key')
       @user_env_key  = normalize_env_key(user_env_key, 'user_env_key')
       @realm         = normalize_realm(realm)
@@ -539,6 +647,17 @@ module Verikloak
       elsif logger.respond_to?(:warn)
         logger.warn(backtrace)
       end
+    end
+
+    def normalize_decoder_cache_limit(limit)
+      return nil if limit.nil?
+
+      value = Integer(limit)
+      raise ArgumentError, 'decoder_cache_limit must be zero or positive' if value.negative?
+
+      value
+    rescue ArgumentError, TypeError
+      raise ArgumentError, 'decoder_cache_limit must be zero or positive'
     end
 
     def normalize_env_key(value, option_name)
