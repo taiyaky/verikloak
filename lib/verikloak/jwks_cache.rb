@@ -2,7 +2,6 @@
 
 require 'faraday'
 require 'json'
-require 'thread'
 
 require 'verikloak/http'
 

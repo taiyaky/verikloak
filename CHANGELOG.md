@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] - 2025-09-23
+
+### Changed
+- **BREAKING**: `JwksCache` is now thread-safe with Mutex synchronization around all cache operations
+- Middleware code organization: split large modules into focused, single-responsibility components:
+  - `SkipPathMatcher`: Path matching and normalization logic
+  - `MiddlewareAudienceResolution`: Audience resolution with dynamic callable support
+  - `MiddlewareConfiguration`: Configuration validation and logging utilities
+  - `MiddlewareDecoderCache`: LRU cache management for TokenDecoder instances
+  - `MiddlewareTokenVerification`: JWT verification and JWKs management
+  - `MiddlewareErrorMapping`: Error-to-HTTP status code mapping
+
+### Fixed
+- Removed duplicate method definitions that were causing code bloat
+- Audience callable parameter detection now handles edge cases more reliably
+- Thread-safety issues in concurrent environments resolved
+
 ## [0.2.0] - 2025-09-22
 
 ### Added
@@ -16,8 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Update gem version to 0.2.0 to stay aligned with the rest of the Verikloak ecosystem gems.
-
----
 
 ## [0.1.5] - 2025-09-21
 
@@ -31,14 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Dependencies
 - Declare `faraday-retry` as a runtime dependency so the default HTTP connection can load the retry middleware.
 
----
-
 ## [0.1.4] - 2025-09-20
 
 ### Chore
 - Bump dev dependency `rexml` to 3.4.2 (PR #15).
-
----
 
 ## [0.1.3] - 2025-09-15
 
@@ -48,8 +59,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Chore
 - Bump dev dependency `rubocop` to 1.80.2 (PR #13).
 - Bump dev dependency `rubocop-rspec` to 3.7.0 (PR #12).
-
----
 
 ## [0.1.2] - 2025-08-31
 
@@ -63,16 +72,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Middleware: TokenDecoder instances are now cached per JWKs fetch for performance improvement.
 - Internal: RuboCop style fixes (`HashExcept`, `HashTransformKeys`, long line splits).
 
----
-
 ## [0.1.1] - 2025-08-24
 
 ### Changed
 
 - Updated dependency constraints in gemspec (`json` ~> 2.6, `jwt` ~> 2.7) for better compatibility control
 - Updated README badges (Gem version, Ruby version, downloads)
-
----
 
 ## [0.1.0] - 2025-08-17
 

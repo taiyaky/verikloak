@@ -4,8 +4,7 @@ FROM ruby:3.4.5-alpine3.22
 # Base packages:
 # - Runtime: bash (for CI commands), git (bundler-audit update), openssl (runtime lib), tzdata, libstdc++
 # - Build deps: build-base, openssl-dev (for native extensions) — removed after bundle install
-RUN apk upgrade --no-cache && \
-    apk add --no-cache \
+RUN apk add --no-cache \
       bash \
       git \
       openssl \

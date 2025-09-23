@@ -357,7 +357,11 @@ RSpec.describe Verikloak::Middleware do
     it "supports zero-arity callables without passing env" do
       zero_callable = double("ZeroAudience")
       expect(zero_callable).to receive(:call).with(no_args).and_return("zero-client")
-      allow(zero_callable).to receive(:arity).and_return(0)
+      
+      # Mock method(:call).parameters to return empty array for zero-arity
+      call_method = double("CallMethod")
+      allow(call_method).to receive(:parameters).and_return([])
+      allow(zero_callable).to receive(:method).with(:call).and_return(call_method)
 
       allow(decoder).to receive(:decode!).and_return({ "sub" => "ok" })
 
