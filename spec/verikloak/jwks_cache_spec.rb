@@ -255,8 +255,6 @@ RSpec.describe Verikloak::JwksCache do
 
     expect(cache.cached).not_to be_nil
     expect(WebMock).to have_requested(:get, jwks_uri).once
-  ensure
-    threads&.each { |thread| thread.kill unless thread.status == false }
   end
 
   # 304 Not Modified may update Cache-Control and should extend TTL from revalidation time
