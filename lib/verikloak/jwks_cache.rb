@@ -50,6 +50,7 @@ module Verikloak
       @etag        = nil
       @fetched_at  = nil
       @max_age     = nil
+      @mutex       = Mutex.new
     end
 
     # Fetches the JWKs and updates the in-memory cache.
@@ -61,27 +62,31 @@ module Verikloak
     # @return [Array&lt;Hash&gt;] the cached JWKs after fetch/revalidation
     # @raise [JwksCacheError] on HTTP failures, invalid JSON, invalid structure, or cache miss on 304
     def fetch!
-      return @cached_keys if fresh_by_ttl?
+      @mutex.synchronize do
+        return @cached_keys if fresh_by_ttl_locked?
 
-      with_error_handling do
-        # Build conditional request headers (ETag-based)
-        headers  = build_conditional_headers
-        # Perform HTTP GET request
-        response = @connection.get(@jwks_uri, nil, headers)
-        # Handle HTTP response according to status code
-        handle_response(response)
+        with_error_handling do
+          # Build conditional request headers (ETag-based)
+          headers  = build_conditional_headers
+          # Perform HTTP GET request
+          response = @connection.get(@jwks_uri, nil, headers)
+          # Handle HTTP response according to status code
+          handle_response(response)
+        end
       end
     end
 
     # Returns the last cached JWKs without performing a network request.
     # @return [Array&lt;Hash&gt;, nil] cached keys, or nil if never fetched
     def cached
-      @cached_keys
+      @mutex.synchronize { @cached_keys }
     end
 
     # Timestamp of the last successful fetch or revalidation.
     # @return [Time, nil]
-    attr_reader :fetched_at
+    def fetched_at
+      @mutex.synchronize { @fetched_at }
+    end
 
     # Injected Faraday connection (for testing and shared config across the gem)
     # @return [Faraday::Connection]
@@ -94,7 +99,7 @@ module Verikloak
     #
     # @return [Boolean]
     def stale?
-      !fresh_by_ttl?
+      @mutex.synchronize { !fresh_by_ttl_locked? }
     end
 
     # @api private
@@ -125,6 +130,12 @@ module Verikloak
     # True when cached keys are still fresh per `Cache-Control: max-age`.
     # @return [Boolean]
     def fresh_by_ttl?
+      @mutex.synchronize { fresh_by_ttl_locked? }
+    end
+
+    private
+
+    def fresh_by_ttl_locked?
       return false unless @cached_keys && @fetched_at && @max_age
 
       (Time.now - @fetched_at) < @max_age

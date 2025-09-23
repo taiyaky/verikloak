@@ -233,6 +233,30 @@ RSpec.describe Verikloak::JwksCache do
     expect(WebMock).to have_requested(:get, jwks_uri).once
   end
 
+  it "serializes concurrent fetch! calls while refreshing the cache" do
+    stub_request(:get, jwks_uri).to_return do
+      sleep 0.1 # simulate slow network request to overlap thread scheduling
+      {
+        status: 200,
+        body: valid_jwks,
+        headers: { "ETag" => 'W/"thread-safe"', "Cache-Control" => "max-age=120" }
+      }
+    end
+
+    cache = described_class.new(jwks_uri: jwks_uri)
+    frozen_time = Time.now
+    allow(Time).to receive(:now).and_return(frozen_time)
+
+    threads = Array.new(5) do
+      Thread.new { cache.fetch! }
+    end
+
+    threads.each(&:join)
+
+    expect(cache.cached).not_to be_nil
+    expect(WebMock).to have_requested(:get, jwks_uri).once
+  end
+
   # 304 Not Modified may update Cache-Control and should extend TTL from revalidation time
   it "updates TTL on 304 Not Modified with Cache-Control header" do
     # Initial 200 with ETag and max-age=60

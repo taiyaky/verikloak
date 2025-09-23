@@ -357,7 +357,11 @@ RSpec.describe Verikloak::Middleware do
     it "supports zero-arity callables without passing env" do
       zero_callable = double("ZeroAudience")
       expect(zero_callable).to receive(:call).with(no_args).and_return("zero-client")
-      allow(zero_callable).to receive(:arity).and_return(0)
+      
+      # Mock method(:call).parameters to return empty array for zero-arity
+      call_method = double("CallMethod")
+      allow(call_method).to receive(:parameters).and_return([])
+      allow(zero_callable).to receive(:method).with(:call).and_return(call_method)
 
       allow(decoder).to receive(:decode!).and_return({ "sub" => "ok" })
 
@@ -419,6 +423,36 @@ RSpec.describe Verikloak::Middleware do
       expect(first_args.first).to be_a(::Hash)
       expect(callable.calls.last).to eq([])
     end
+
+    it "supports keyword-only audience callables" do
+      keyword_callable = Class.new do
+        attr_reader :calls
+
+        def initialize
+          @calls = []
+        end
+
+        def call(env:)
+          @calls << env
+          "keyword-client"
+        end
+      end.new
+
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "ok" })
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: keyword_callable
+      )
+
+      request = Rack::MockRequest.new(mw)
+      response = request.get("/keyword", "HTTP_AUTHORIZATION" => "Bearer token")
+
+      expect(response.status).to eq 200
+      expect(keyword_callable.calls.length).to eq(1)
+      expect(keyword_callable.calls.first).to be_a(Hash)
+      expect(keyword_callable.calls.first["PATH_INFO"]).to eq("/keyword")
+    end
   end
 
   context "dynamic audience resolution" do
@@ -477,6 +511,107 @@ RSpec.describe Verikloak::Middleware do
       body = JSON.parse(response.body)
       expect(body["error"]).to eq("invalid_audience")
       expect(body["message"]).to match(/Audience is blank/)
+    end
+  end
+
+  context "decoder cache management" do
+    let(:decoder_instances) { Hash.new { |hash, key| hash[key] = [] } }
+
+    before do
+      allow(Verikloak::TokenDecoder).to receive(:new) do |options|
+        instance = instance_double("Verikloak::TokenDecoder")
+        decoder_instances[options[:audience]] << instance
+        allow(instance).to receive(:decode!).and_return({ "sub" => options[:audience] })
+        instance
+      end
+    end
+
+    it "evicts least recently used decoders when limit is exceeded" do
+      cache = Class.new do
+        attr_reader :fetched_at
+
+        def initialize(keys)
+          @keys = keys
+          @fetched_at = Time.now
+        end
+
+        def cached
+          @keys
+        end
+
+        def fetch!
+          @fetched_at ||= Time.now
+          @keys
+        end
+      end.new([{ "kid" => "limit" }])
+
+      audience_proc = lambda do |env|
+        env['PATH_INFO'].delete_prefix('/')
+      end
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: audience_proc,
+        jwks_cache: cache,
+        decoder_cache_limit: 2
+      )
+
+      request = Rack::MockRequest.new(mw)
+
+      %w[a1 a2 a3 a1].each do |aud|
+        response = request.get("/#{aud}", "HTTP_AUTHORIZATION" => "Bearer token-#{aud}")
+        expect(response.status).to eq 200
+      end
+
+      expect(decoder_instances['a1'].size).to eq(2)
+      expect(decoder_instances['a2'].size).to eq(1)
+      expect(decoder_instances['a3'].size).to eq(1)
+    end
+
+    it "clears cached decoders when JWK keys rotate" do
+      rotating_cache = Class.new do
+        attr_reader :fetched_at
+
+        def initialize(keys)
+          @keys = keys
+          @fetched_at = Time.now
+        end
+
+        def cached
+          @keys
+        end
+
+        def fetch!
+          @fetched_at ||= Time.now
+          @keys
+        end
+
+        def rotate!(new_keys)
+          @keys = new_keys
+          @fetched_at = Time.now
+        end
+      end.new([{ "kid" => "v1" }])
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        jwks_cache: rotating_cache,
+        decoder_cache_limit: nil
+      )
+
+      request = Rack::MockRequest.new(mw)
+
+      response_first = request.get("/initial", "HTTP_AUTHORIZATION" => "Bearer token-initial")
+      expect(response_first.status).to eq 200
+      expect(decoder_instances['my-client-id'].size).to eq(1)
+      expect(mw.instance_variable_get(:@decoder_cache).size).to eq(1)
+
+      rotating_cache.rotate!([{ "kid" => "v2" }])
+
+      response_second = request.get("/rotated", "HTTP_AUTHORIZATION" => "Bearer token-rotated")
+      expect(response_second.status).to eq 200
+      expect(decoder_instances['my-client-id'].size).to eq(2)
+      expect(mw.instance_variable_get(:@decoder_cache).size).to eq(1)
     end
   end
 

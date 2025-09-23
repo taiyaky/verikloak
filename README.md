@@ -252,6 +252,7 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `jwks_cache`    | No       | Inject custom JwksCache instance (advanced/testing) |
 | `leeway`       | No       | Clock skew tolerance (seconds) applied during JWT verification. Defaults to `TokenDecoder::DEFAULT_LEEWAY`. |
 | `token_verify_options` | No | Hash of advanced JWT verification options passed through to TokenDecoder. For example: `{ verify_iat: false, leeway: 10, algorithms: ["RS256"] }`. If both `leeway:` and `token_verify_options[:leeway]` are set, the latter takes precedence. |
+| `decoder_cache_limit` | No | Maximum number of `TokenDecoder` instances retained per middleware. Defaults to `128`. Set to `0` to disable caching or `nil` for an unlimited cache. |
 | `connection`   | No       | Inject a Faraday::Connection used for both Discovery and JWKs fetches. Defaults to a safe connection with timeouts and retries. |
 
 #### Option: `skip_paths`
@@ -276,7 +277,7 @@ Internally, `*` expands to match nested paths, so patterns like `/rails/*` are v
 
 #### Option: `audience`
 
-The `audience` option may be either a static String or any callable object (Proc, lambda, object responding to `#call`). When a callable is provided it receives the Rack `env` and can return a different audience for each request. This is useful when a single gateway serves multiple downstream clients:
+The `audience` option may be either a static String or any callable object (Proc, lambda, object responding to `#call`). When a callable is provided it receives the Rack `env` (either as a positional argument or keyword `env:`) and can return a different audience for each request. This is useful when a single gateway serves multiple downstream clients:
 
 ```ruby
 Verikloak::Middleware.new(app,
@@ -342,11 +343,37 @@ config.middleware.use Verikloak::Middleware,
 - `token_verify_options:` is passed directly to TokenDecoder (and ultimately to `JWT.decode`).
 - If both are set, `token_verify_options[:leeway]` takes precedence.
 
-#### Performance note
+#### Decoder cache & performance
 
 Internally, Verikloak caches `TokenDecoder` instances per JWKs fetch to avoid reinitializing
-them on every request. This improves performance while still ensuring that keys are
-revalidated when JWKs is refreshed.
+them on every request. The cache behaves like an LRU with a configurable size (`decoder_cache_limit`)
+so long-running processes do not accumulate decoders for one-off audiences. When the underlying
+JWK set rotates, the middleware now clears the cache to drop decoders that point at stale keys.
+
+Set `decoder_cache_limit` to `0` if you prefer to construct a fresh decoder every time, or `nil`
+when you want the cache to grow without bounds (e.g., in short-lived jobs).
+
+#### Sharing caches across verikloak gems
+
+When combining `verikloak` with companion gems (such as `verikloak-rails`, `verikloak-bff`, etc.),
+reusing infrastructure objects avoids redundant HTTP calls:
+
+```ruby
+connection = Verikloak::HTTP.default_connection
+jwks_cache = Verikloak::JwksCache.new(jwks_uri: ENV['JWKS_URI'], connection: connection)
+
+use Verikloak::Middleware,
+    discovery_url: ENV['DISCOVERY_URL'],
+    audience: ->(env) { env['verikloak.audience'] },
+    connection: connection,
+    jwks_cache: jwks_cache
+
+# Rails initializer or service object can now reuse `connection` and `jwks_cache`
+# when configuring other verikloak-* gems.
+```
+
+Sharing the Faraday connection keeps retry/time-out policies consistent, while a single `JwksCache`
+ensures all middleware layers refresh keys in unison.
 
 ## Architecture
 
