@@ -41,9 +41,41 @@ Add the middleware in `config/application.rb`:
 ```ruby
 config.middleware.use Verikloak::Middleware,
   discovery_url: "https://keycloak.example.com/realms/myrealm/.well-known/openid-configuration",
-  audience: "your-client-id",
-  skip_paths: ['/skip_path']
+  audience: "your-client-id"
 ```
+
+For production environments, use environment variables:
+
+```ruby
+config.middleware.use Verikloak::Middleware,
+  discovery_url: ENV.fetch("DISCOVERY_URL"),
+  audience: ENV.fetch("CLIENT_ID"),
+  skip_paths: ['/', '/health', '/public/*', '/rails/*']
+```
+
+#### Advanced configuration
+
+For more complex setups, Verikloak supports additional configuration options:
+
+```ruby
+config.middleware.use Verikloak::Middleware,
+  discovery_url: ENV.fetch("DISCOVERY_URL"),
+  audience: ENV.fetch("CLIENT_ID"),
+  issuer: "https://custom.issuer.example.com/realms/myrealm", # Optional: override discovered issuer
+  skip_paths: ['/', '/health', '/public/*', '/rails/*'],
+  leeway: 30, # Allow 30 seconds clock skew
+  token_env_key: "rack.session.token",     # Custom token storage key
+  user_env_key: "rack.session.claims",     # Custom user claims storage key
+  realm: "my-api",                         # Custom realm for WWW-Authenticate header
+  logger: Rails.logger                     # Logger for internal errors
+```
+
+**Additional middleware options:**
+
+- `token_env_key` (default: `"verikloak.token"`) — where the raw JWT is stored in the Rack env
+- `user_env_key` (default: `"verikloak.user"`) — where decoded claims are stored
+- `realm` (default: `"verikloak"`) — value used in the `WWW-Authenticate` header for 401 responses
+- `logger` — an object responding to `error` (and optionally `debug`) that receives unexpected 500-level failures
 
 #### Handling Authentication Failures
 
@@ -84,53 +116,6 @@ All Verikloak errors inherit from `Verikloak::Error`:
 - `Verikloak::JwksCacheError` – JWKs fetch/parse/cache (`503 Service Unavailable`)
 - `Verikloak::MiddlewareError` – header/infra issues surfaced by the middleware (usually `401`, sometimes `503`)
 
-#### Recommended: use environment variables in production
-
-```ruby
-config.middleware.use Verikloak::Middleware,
-  discovery_url: ENV.fetch("DISCOVERY_URL"),
-  audience: ENV.fetch("CLIENT_ID"),
-  skip_paths: ['/', '/health', '/public/*', '/rails/*']
-```
-This makes the configuration secure and flexible across environments.
-
-#### Advanced middleware options
-
-`Verikloak::Middleware` exposes a few optional knobs that help integrate with
-different Rack stacks:
-
-- `token_env_key` (default: `"verikloak.token"`) — where the raw JWT is stored in the Rack env
-- `user_env_key` (default: `"verikloak.user"`) — where decoded claims are stored
-- `realm` (default: `"verikloak"`) — value used in the `WWW-Authenticate` header for 401 responses
-- `logger` — an object responding to `error` (and optionally `debug`) that receives unexpected 500-level failures
-
-```ruby
-config.middleware.use Verikloak::Middleware,
-  discovery_url: ENV.fetch("DISCOVERY_URL"),
-  audience: ENV.fetch("CLIENT_ID"),
-  token_env_key: "rack.session.token",
-  user_env_key: "rack.session.claims",
-  realm: "my-api",
-  logger: Rails.logger
-```
-
-### Accessing claims in controllers
-
-Once the middleware is enabled, Verikloak adds the decoded token and raw JWT to the Rack environment.  
-You can access them in any Rails controller:
-
-```ruby
-class Api::V1::NotesController < ApplicationController
-  def index
-    user_claims = request.env["verikloak.user"]    # Hash of decoded Keycloak JWT claims
-    token       = request.env["verikloak.token"]   # Raw JWT token string
-    
-    # Example: use claims for authorization or logging
-    render json: { sub: user_claims["sub"], email: user_claims["email"] }
-  end
-end
-```
-
 ### Standalone Rack app
 
 ```ruby
@@ -145,6 +130,22 @@ run ->(env) {
   user = env["verikloak.user"] # Decoded JWT claims hash (if token is valid)
   [200, { "Content-Type" => "application/json" }, [user.to_json]]
 }
+```
+
+### Accessing claims in controllers
+
+Once the middleware is enabled, Verikloak adds the decoded token and raw JWT to the Rack environment:
+
+```ruby
+class Api::V1::NotesController < ApplicationController
+  def index
+    user_claims = request.env["verikloak.user"]    # Hash of decoded Keycloak JWT claims
+    token       = request.env["verikloak.token"]   # Raw JWT token string
+    
+    # Example: use claims for authorization or logging
+    render json: { sub: user_claims["sub"], email: user_claims["email"] }
+  end
+end
 ```
 
 ## How It Works
@@ -194,26 +195,7 @@ Verikloak returns JSON error responses in a consistent format with structured er
 }
 ```
 
-```json
-{
-  "error": "jwks_parse_failed",
-  "message": "Failed to parse JWKs"
-}
-```
-
-```json
-{
-  "error": "discovery_metadata_fetch_failed",
-  "message": "Failed to fetch OIDC discovery document"
-}
-```
-
-```json
-{
-  "error": "discovery_metadata_invalid",
-  "message": "Failed to parse OIDC discovery document"
-}
-```
+For a full list of error cases and detailed explanations, please see the [ERRORS.md](ERRORS.md) file.
 
 ### Error Types
 
@@ -223,23 +205,21 @@ Verikloak returns JSON error responses in a consistent format with structured er
 | `expired_token`            | 401 Unauthorized          | The token has expired                                                                        |
 | `missing_authorization_header` | 401 Unauthorized      | The `Authorization` header is missing                                                        |
 | `invalid_authorization_header` | 401 Unauthorized      | The `Authorization` header format is invalid                                                 |
-| `unsupported_algorithm`    | 401 Unauthorized          | The token’s signing algorithm is not supported                                               |
+| `unsupported_algorithm`    | 401 Unauthorized          | The token's signing algorithm is not supported                                               |
 | `invalid_signature`        | 401 Unauthorized          | The token signature could not be verified                                                    |
 | `invalid_issuer`           | 401 Unauthorized          | Invalid `iss` claim                                                                          |
 | `invalid_audience`         | 401 Unauthorized          | Invalid `aud` claim                                                                          |
 | `not_yet_valid`            | 401 Unauthorized          | The token is not yet valid (`nbf` in the future)                                             |
-| `jwks_fetch_failed`        | 503 Service Unavailable   | Failed to fetch JWKs                                                                    |
-| `jwks_parse_failed`        | 503 Service Unavailable   | Failed to parse JWKs                                                                    |
+| `jwks_fetch_failed`        | 503 Service Unavailable   | Failed to fetch JWKs                                                                         |
+| `jwks_parse_failed`        | 503 Service Unavailable   | Failed to parse JWKs                                                                         |
 | `jwks_cache_miss`          | 503 Service Unavailable   | JWKs cache is empty (e.g., 304 Not Modified without prior cache)                             |
 | `discovery_metadata_fetch_failed` | 503 Service Unavailable   | Failed to fetch OIDC discovery document                                               |
-| `discovery_metadata_invalid` | 503 Service Unavailable   | Failed to parse OIDC discovery document                                                    |
+| `discovery_metadata_invalid` | 503 Service Unavailable   | Failed to parse OIDC discovery document                                                     |
 | `discovery_redirect_error` | 503 Service Unavailable   | Discovery response was a redirect without a valid Location header                           |
 | `internal_server_error`    | 500 Internal Server Error | Unexpected internal error (catch-all)                                                        |
 
 > **Note:** The `decode_with_public_key` method ensures consistent error codes for all JWT verification failures.  
 > It may raise `invalid_signature`, `unsupported_algorithm`, `expired_token`, `invalid_issuer`, `invalid_audience`, or `not_yet_valid` depending on the verification outcome.
-
-For a full list of error cases and detailed explanations, please see the [ERRORS.md](ERRORS.md) file.
 
 ## Configuration Options
 
@@ -247,6 +227,7 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | --------------- | -------- | ------------------------------------------- |
 | `discovery_url` | Yes   | Full URL to your realm's OIDC discovery doc |
 | `audience`      | Yes   | Your client ID (checked against `aud`). Accepts a String or callable returning a String/Array per request. |
+| `issuer`        | No       | Optional override for the expected `iss` claim; defaults to the discovery `issuer`. |
 | `skip_paths`    | No       | Array of paths or wildcards to skip authentication, e.g. `['/', '/health', '/public/*']`. **Note:** Regex patterns are not supported. |
 | `discovery`     | No       | Inject custom Discovery instance (advanced/testing) |
 | `jwks_cache`    | No       | Inject custom JwksCache instance (advanced/testing) |
@@ -254,6 +235,10 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `token_verify_options` | No | Hash of advanced JWT verification options passed through to TokenDecoder. For example: `{ verify_iat: false, leeway: 10, algorithms: ["RS256"] }`. If both `leeway:` and `token_verify_options[:leeway]` are set, the latter takes precedence. |
 | `decoder_cache_limit` | No | Maximum number of `TokenDecoder` instances retained per middleware. Defaults to `128`. Set to `0` to disable caching or `nil` for an unlimited cache. |
 | `connection`   | No       | Inject a Faraday::Connection used for both Discovery and JWKs fetches. Defaults to a safe connection with timeouts and retries. |
+| `token_env_key` | No       | Rack env key for the raw JWT. Defaults to `verikloak.token`. |
+| `user_env_key`  | No       | Rack env key for decoded claims. Defaults to `verikloak.user`. |
+| `realm`         | No       | Value used in the `WWW-Authenticate` header. Defaults to `verikloak`. |
+| `logger`        | No       | Logger for unexpected internal failures (responds to `error`, optionally `debug`). |
 
 #### Option: `skip_paths`
 
@@ -273,7 +258,7 @@ skip_paths: ['/', '/health', '/rails/*', '/public/src']
 Paths **not matched** by any `skip_paths` entry will require a valid JWT.
 
 **Note:** Regex patterns are not supported. Only literal paths and `*` wildcards are allowed.  
-Internally, `*` expands to match nested paths, so patterns like `/rails/*` are valid. This differs from regex — for example, `'/rails'` alone matches only `/rails`, while `'/rails/*'` covers both `/rails` and deeper subpaths.
+Internally, `*` expands to match nested paths, so patterns like `/rails/*` are valid. This differs from regex; for example, `'/rails'` alone matches only `/rails`, while `'/rails/*'` covers both `/rails` and deeper subpaths.
 
 #### Option: `audience`
 
@@ -342,6 +327,8 @@ config.middleware.use Verikloak::Middleware,
 - `leeway:` sets the default skew tolerance in seconds.
 - `token_verify_options:` is passed directly to TokenDecoder (and ultimately to `JWT.decode`).
 - If both are set, `token_verify_options[:leeway]` takes precedence.
+
+## Performance & Caching
 
 #### Decoder cache & performance
 

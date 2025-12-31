@@ -489,9 +489,14 @@ module Verikloak
         previous_keys_id = cached_keys_identity(@jwks_cache)
         if @jwks_cache.nil?
           config   = @discovery.fetch!
-          @issuer  = config['issuer']
+          # Use configured issuer if provided, otherwise use discovered issuer
+          @issuer  = @configured_issuer || config['issuer']
           jwks_uri = config['jwks_uri']
           @jwks_cache = JwksCache.new(jwks_uri: jwks_uri, connection: @connection)
+        elsif @configured_issuer.nil? && @issuer.nil?
+          # If jwks_cache was injected but no issuer configured and not yet discovered, fetch discovery to set issuer
+          config = @discovery.fetch!
+          @issuer = config['issuer']
         end
 
         @jwks_cache.fetch!
@@ -633,6 +638,7 @@ module Verikloak
     # @param discovery_url [String] OIDC discovery endpoint URL
     # @param audience [String, #call] Expected `aud` claim. When a callable is provided it
     #   receives the Rack env and may return a String or Array of audiences.
+    # @param issuer [String, nil] Optional issuer override (defaults to discovery `issuer`)
     # @param skip_paths [Array<String>] literal paths or wildcard patterns to bypass auth
     # @param discovery [Discovery, nil] custom discovery instance (for DI/tests)
     # @param jwks_cache [JwksCache, nil] custom JWKs cache instance (for DI/tests)
@@ -648,6 +654,7 @@ module Verikloak
     def initialize(app,
                    discovery_url:,
                    audience:,
+                   issuer: nil,
                    skip_paths: [],
                    discovery: nil,
                    jwks_cache: nil,
@@ -667,7 +674,8 @@ module Verikloak
       @leeway = leeway
       @token_verify_options = token_verify_options || {}
       @decoder_cache_limit = normalize_decoder_cache_limit(decoder_cache_limit)
-      @issuer        = nil
+      @configured_issuer = issuer # User-configured issuer (overrides discovery issuer if set)
+      @issuer        = @configured_issuer # Effective issuer (configured or discovered)
       @mutex         = Mutex.new
       @decoder_cache = {}
       @decoder_cache_order = []

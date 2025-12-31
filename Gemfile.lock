@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    verikloak (0.2.1)
+    verikloak (0.3.0)
       faraday (>= 2.0, < 3.0)
       faraday-retry (>= 2.0, < 3.0)
       json (~> 2.6)
@@ -113,7 +113,7 @@ DEPENDENCIES
   webmock (~> 3.18)
 
 RUBY VERSION
-   ruby 3.4.5p51
+   ruby 3.4.8p120
 
 BUNDLED WITH
    2.6.9
