@@ -819,7 +819,7 @@ RSpec.describe Verikloak::Middleware do
     end
 
     it "uses discovery issuer when jwks_cache is injected but no issuer configured" do
-      # Create a mock JwksCache that behaves like a pre-existing cache  
+      # Create a mock JwksCache that behaves like a pre-existing cache
       mock_jwks_cache = instance_double("Verikloak::JwksCache")
       allow(mock_jwks_cache).to receive(:fetch!).and_return(true)
       allow(mock_jwks_cache).to receive(:cached).and_return([{"kid" => "dummy"}])
