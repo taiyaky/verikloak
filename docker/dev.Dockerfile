@@ -1,5 +1,5 @@
 # docker/dev.Dockerfile
-FROM ruby:3.4.5-alpine3.22
+FROM ruby:3.4.8-alpine3.23
 
 # Base packages:
 # - Runtime: bash (for CI commands), git (bundler-audit update), openssl (runtime lib), tzdata, libstdc++

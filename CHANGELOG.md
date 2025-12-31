@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2025-12-31
+
+### Added
+- **NEW**: `issuer` parameter for `Middleware#initialize` to optionally override the discovered issuer
+  - When provided, the configured issuer takes precedence over the OIDC discovery document's issuer
+  - This enables compatibility with `verikloak-rails` which passes `issuer` from configuration
+  - If not provided, the middleware continues to use the issuer from OIDC discovery (existing behavior)
+
+### Changed
+- Internal issuer handling now distinguishes between `@configured_issuer` (user-provided) and `@issuer` (discovered/effective)
+- When `jwks_cache` is injected, discovery is only fetched once (and skipped entirely if `issuer` is provided)
+
 ## [0.2.1] - 2025-09-23
 
 ### Changed

@@ -2,7 +2,7 @@
 
 source 'https://rubygems.org'
 
-ruby '3.4.5'
+ruby '3.4.8'
 
 gemspec
 
@@ -16,5 +16,5 @@ end
 
 group :test do
   gem 'rack-test', '~> 2.1'
-  gem 'webmock', '~> 3.18'
+  gem 'webmock', '~> 3.26'
 end

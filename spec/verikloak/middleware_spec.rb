@@ -731,4 +731,179 @@ RSpec.describe Verikloak::Middleware do
       expect(res2["WWW-Authenticate"]).to be_nil
     end
   end
+
+  context "issuer parameter configuration" do
+    # Test scenario: issuer parameter overrides discovery issuer for JWT verification
+    let(:discovery_issuer) { "https://discovery.example.com/" }
+    let(:custom_issuer) { "https://custom.example.com/" }
+
+    before do
+      allow_any_instance_of(Verikloak::Discovery).to receive(:fetch!)
+        .and_return({ "issuer" => discovery_issuer, "jwks_uri" => "https://example.com/jwks" })
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:cached).and_return([{"kid" => "dummy"}])
+    end
+
+    it "uses discovery issuer when issuer parameter is not provided" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id"
+      )
+
+      expect(Verikloak::TokenDecoder).to receive(:new).with(
+        hash_including(issuer: discovery_issuer)
+      ).and_return(instance_double("Verikloak::TokenDecoder", decode!: { "sub" => "user1" }))
+
+      request = Rack::MockRequest.new(mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer token")
+      expect(res.status).to eq 200
+    end
+
+    it "uses configured issuer when issuer parameter is provided" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        issuer: custom_issuer
+      )
+
+      expect(Verikloak::TokenDecoder).to receive(:new).with(
+        hash_including(issuer: custom_issuer)
+      ).and_return(instance_double("Verikloak::TokenDecoder", decode!: { "sub" => "user1" }))
+
+      request = Rack::MockRequest.new(mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer token")
+      expect(res.status).to eq 200
+    end
+
+    it "configured issuer takes precedence over discovery issuer" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        issuer: custom_issuer
+      )
+
+      # Verify that the custom issuer is used, not the discovery one
+      expect(Verikloak::TokenDecoder).to receive(:new) do |args|
+        expect(args[:issuer]).to eq(custom_issuer)
+        expect(args[:issuer]).not_to eq(discovery_issuer)
+        instance_double("Verikloak::TokenDecoder", decode!: { "sub" => "user1" })
+      end
+
+      request = Rack::MockRequest.new(mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer token")
+      expect(res.status).to eq 200
+    end
+
+    it "uses configured issuer when jwks_cache is injected" do
+      # Create a mock JwksCache that behaves like a pre-existing cache
+      mock_jwks_cache = instance_double("Verikloak::JwksCache")
+      allow(mock_jwks_cache).to receive(:fetch!).and_return(true)
+      allow(mock_jwks_cache).to receive(:cached).and_return([{"kid" => "dummy"}])
+      allow(mock_jwks_cache).to receive(:fetched_at).and_return(nil)
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        issuer: custom_issuer,
+        jwks_cache: mock_jwks_cache  # Pre-inject cache
+      )
+
+      # Even with injected cache, configured issuer should be used
+      expect(Verikloak::TokenDecoder).to receive(:new).with(
+        hash_including(issuer: custom_issuer)
+      ).and_return(instance_double("Verikloak::TokenDecoder", decode!: { "sub" => "user1" }))
+
+      request = Rack::MockRequest.new(mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer token")
+      expect(res.status).to eq 200
+    end
+
+    it "uses discovery issuer when jwks_cache is injected but no issuer configured" do
+      # Create a mock JwksCache that behaves like a pre-existing cache
+      mock_jwks_cache = instance_double("Verikloak::JwksCache")
+      allow(mock_jwks_cache).to receive(:fetch!).and_return(true)
+      allow(mock_jwks_cache).to receive(:cached).and_return([{"kid" => "dummy"}])
+      allow(mock_jwks_cache).to receive(:fetched_at).and_return(nil)
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        jwks_cache: mock_jwks_cache  # Pre-inject cache, no issuer configured
+      )
+
+      # Should fetch discovery and use discovered issuer
+      expect(Verikloak::TokenDecoder).to receive(:new).with(
+        hash_including(issuer: discovery_issuer)
+      ).and_return(instance_double("Verikloak::TokenDecoder", decode!: { "sub" => "user1" }))
+
+      request = Rack::MockRequest.new(mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer token")
+      expect(res.status).to eq 200
+    end
+
+    it "does not call discovery when both issuer and jwks_cache are provided" do
+      # Create a mock JwksCache that behaves like a pre-existing cache
+      mock_jwks_cache = instance_double("Verikloak::JwksCache")
+      allow(mock_jwks_cache).to receive(:fetch!).and_return(true)
+      allow(mock_jwks_cache).to receive(:cached).and_return([{"kid" => "dummy"}])
+      allow(mock_jwks_cache).to receive(:fetched_at).and_return(nil)
+
+      # Mock discovery to verify it's NOT called
+      mock_discovery = instance_double("Verikloak::Discovery")
+      
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        issuer: custom_issuer,
+        jwks_cache: mock_jwks_cache,  # Pre-inject cache
+        discovery: mock_discovery     # Mock discovery
+      )
+
+      # Discovery should NOT be called when both issuer and jwks_cache are provided
+      expect(mock_discovery).not_to receive(:fetch!)
+
+      expect(Verikloak::TokenDecoder).to receive(:new).with(
+        hash_including(issuer: custom_issuer)
+      ).and_return(instance_double("Verikloak::TokenDecoder", decode!: { "sub" => "user1" }))
+
+      request = Rack::MockRequest.new(mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer token")
+      expect(res.status).to eq 200
+    end
+
+    it "calls discovery only once when jwks_cache is injected but no issuer configured" do
+      # Create a mock JwksCache that behaves like a pre-existing cache
+      mock_jwks_cache = instance_double("Verikloak::JwksCache")
+      allow(mock_jwks_cache).to receive(:fetch!).and_return(true)
+      allow(mock_jwks_cache).to receive(:cached).and_return([{"kid" => "dummy"}])
+      allow(mock_jwks_cache).to receive(:fetched_at).and_return(nil)
+
+      # Mock discovery to verify it's called only once
+      mock_discovery = instance_double("Verikloak::Discovery")
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        jwks_cache: mock_jwks_cache,  # Pre-inject cache, no issuer configured
+        discovery: mock_discovery     # Mock discovery
+      )
+
+      # Discovery should be called only once (on first request), not on subsequent requests
+      expect(mock_discovery).to receive(:fetch!).once.and_return({ "issuer" => discovery_issuer, "jwks_uri" => "https://example.com/jwks" })
+
+      # TokenDecoder should be created only once and then cached for subsequent requests
+      expect(Verikloak::TokenDecoder).to receive(:new).once.with(
+        hash_including(issuer: discovery_issuer)
+      ).and_return(instance_double("Verikloak::TokenDecoder", decode!: { "sub" => "user1" }))
+
+      # First request - should trigger discovery
+      request = Rack::MockRequest.new(mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer token")
+      expect(res.status).to eq 200
+
+      # Second request - should NOT trigger discovery again
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer token")
+      expect(res.status).to eq 200
+    end
+  end
 end
