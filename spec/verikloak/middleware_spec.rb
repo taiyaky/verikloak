@@ -880,7 +880,6 @@ RSpec.describe Verikloak::Middleware do
 
       # Mock discovery to verify it's called only once
       mock_discovery = instance_double("Verikloak::Discovery")
-      allow(mock_discovery).to receive(:fetch!).and_return({ "issuer" => discovery_issuer, "jwks_uri" => "https://example.com/jwks" })
 
       mw = described_class.new(inner_app,
         discovery_url: "https://example.com/.well-known/openid-configuration",
@@ -890,7 +889,7 @@ RSpec.describe Verikloak::Middleware do
       )
 
       # Discovery should be called only once (on first request), not on subsequent requests
-      expect(mock_discovery).to receive(:fetch!).once
+      expect(mock_discovery).to receive(:fetch!).once.and_return({ "issuer" => discovery_issuer, "jwks_uri" => "https://example.com/jwks" })
 
       # TokenDecoder should be created only once and then cached for subsequent requests
       expect(Verikloak::TokenDecoder).to receive(:new).once.with(
