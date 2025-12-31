@@ -674,8 +674,8 @@ module Verikloak
       @leeway = leeway
       @token_verify_options = token_verify_options || {}
       @decoder_cache_limit = normalize_decoder_cache_limit(decoder_cache_limit)
-      @configured_issuer = issuer # User-configured issuer (overrides discovery issuer if set)
-      @issuer        = @configured_issuer # Effective issuer (configured or discovered)
+      @configured_issuer = issuer # Optional user-configured issuer (overrides discovery issuer when provided)
+      @issuer        = @configured_issuer # Effective issuer; may be nil initially and set via discovery if not configured
       @mutex         = Mutex.new
       @decoder_cache = {}
       @decoder_cache_order = []
