@@ -1,7 +1,10 @@
 # frozen_string_literal: true
 
 require 'faraday'
+require 'ipaddr'
 require 'json'
+require 'resolv'
+require 'uri'
 
 require 'verikloak/http'
 
@@ -39,7 +42,7 @@ module Verikloak
     # @param jwks_uri [String] HTTPS URL of the JWKs endpoint
     # @param connection [Faraday::Connection, nil] Optional Faraday connection for HTTP requests
     # @param allow_http [Boolean] When false (default), raises on plain HTTP URIs. Set true for local development only.
-    # @raise [JwksCacheError] if the URI is not an HTTP(S) URL
+    # @raise [JwksCacheError] if the URI is not an HTTP(S) URL or resolves to a private/internal address
     def initialize(jwks_uri:, connection: nil, allow_http: false)
       unless jwks_uri.is_a?(String)
         raise JwksCacheError.new('Invalid JWKs URI: must be a non-empty HTTP(S) URL', code: 'jwks_fetch_failed')
@@ -57,6 +60,8 @@ module Verikloak
           code: 'insecure_jwks_uri'
         )
       end
+
+      validate_not_private!(clean_jwks_uri)
 
       @jwks_uri    = clean_jwks_uri
       @connection  = connection || Verikloak::HTTP.default_connection
@@ -153,6 +158,41 @@ module Verikloak
       return false unless @cached_keys && @fetched_at && @max_age
 
       (Time.now - @fetched_at) < @max_age
+    end
+
+    # Validates that the JWKs URI does not resolve to a private/internal IP address (SSRF protection).
+    #
+    # The discovery redirect flow already validates redirect targets, but the `jwks_uri` value
+    # extracted from the discovery JSON document itself was not previously validated, allowing a
+    # compromised or malicious discovery endpoint to point JWKs fetching at internal services.
+    #
+    # IPv4-mapped IPv6 addresses (e.g. `::ffff:127.0.0.1`) are normalised to their native IPv4
+    # form before comparison, consistent with {Verikloak::Discovery}.
+    #
+    # @api private
+    # @param url [String] The JWKs URI to validate
+    # @raise [JwksCacheError] when the URI resolves to a private/internal address
+    def validate_not_private!(url)
+      uri = URI.parse(url)
+      host = uri.host
+      return unless host
+
+      Resolv.getaddresses(host).each do |addr|
+        ip = IPAddr.new(addr)
+        ip = ip.native if ip.ipv4_mapped?
+        next unless Verikloak::PRIVATE_IP_RANGES.any? { |range| range.include?(ip) }
+
+        raise JwksCacheError.new(
+          "JWKs URI resolves to a private/internal address (#{host})",
+          code: 'jwks_ssrf_blocked'
+        )
+      end
+    rescue URI::InvalidURIError => e
+      raise JwksCacheError.new("Invalid JWKs URI: #{e.message}", code: 'jwks_fetch_failed')
+    rescue IPAddr::InvalidAddressError
+      # If the address cannot be parsed, allow the request to proceed
+      # (Faraday will handle the actual connection error)
+      nil
     end
 
     # @api private

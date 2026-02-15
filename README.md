@@ -18,7 +18,7 @@ Verikloak is a plug-and-play solution for Ruby (especially Rails API) apps that 
 - Rails/Rack middleware support
 - Faraday-based customizable HTTP layer
 - HTTPS enforcement for Discovery and JWKs endpoints (with `allow_http:` escape hatch for development)
-- SSRF protection — redirect targets validated against private IP ranges (including IPv4-mapped IPv6 normalisation)
+- SSRF protection — discovery redirect targets **and** `jwks_uri` values validated against private IP ranges (including IPv4-mapped IPv6 normalisation)
 - HTTPS redirect enforcement — redirect targets are scheme-checked to prevent HTTPS→HTTP downgrade
 - JWT size limit (8 KB) to mitigate denial-of-service via oversized tokens
 - Header injection prevention in `WWW-Authenticate` responses
@@ -225,6 +225,7 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `discovery_redirect_error` | 503 Service Unavailable   | Discovery redirect error: missing/invalid Location header, redirect target resolves to a private IP (SSRF protection), redirect uses non-HTTPS scheme, or unsupported scheme |
 | `insecure_discovery_url`   | 503 Service Unavailable   | Discovery URL uses `http://` and `allow_http: true` is not set                               |
 | `insecure_jwks_uri`        | 503 Service Unavailable   | JWKs URI uses `http://` and `allow_http: true` is not set                                    |
+| `jwks_ssrf_blocked`        | 503 Service Unavailable   | JWKs URI hostname resolves to a private/loopback IP address (SSRF protection)                |
 | `internal_server_error`    | 500 Internal Server Error | Unexpected internal error (catch-all)                                                        |
 
 > **Note:** The `decode_with_public_key` method ensures consistent error codes for all JWT verification failures.  

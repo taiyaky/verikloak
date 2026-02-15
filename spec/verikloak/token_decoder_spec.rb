@@ -101,7 +101,7 @@ RSpec.describe Verikloak::TokenDecoder do
       tampered_payload = JWT::Base64.url_encode(payload_json.to_json)
       tampered = [header, tampered_payload, sig].join(".")
       expect { decoder.decode!(tampered) }.to raise_error(Verikloak::TokenDecoderError) { |e|
-        expect(e.code).to eq("invalid_token").or eq("invalid_signature")
+        expect(e.code).to eq("invalid_signature")
       }
     end
 

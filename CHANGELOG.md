@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.0] - 2026-02-15
+
+### Security
+- **JWKs URI SSRF protection**: `JwksCache` now validates `jwks_uri` from discovery documents against private IP ranges (RFC 1918, loopback, link-local), preventing a malicious discovery endpoint from directing JWKs fetches to internal services
+
+### Fixed
+- **`TokenDecoder` error classification**: `invalid_signature` and `unsupported_algorithm` error codes were never returned due to dead `case/when` branches — replaced with `if/elsif` chain so `JWT::VerificationError` and `JWT::IncorrectAlgorithm` are classified correctly
+
+### Added
+- **`rack` runtime dependency**: Added `rack >= 2.2, < 4.0` to gemspec (was previously required but undeclared)
+
+### Changed
+- **`json` dependency relaxed**: `~> 2.18` → `~> 2.6` to broaden compatibility with older Ruby versions and bundled json gems
+- **v1.0.0 stable release**: Public API is now considered stable under Semantic Versioning
+
+---
+
 ## [0.4.1] - 2026-02-15
 
 ### Added
