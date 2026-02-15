@@ -375,4 +375,45 @@ RSpec.describe Verikloak::JwksCache do
     cache.fetch!
     stubs.verify_stubbed_calls
   end
+
+  # --- SSRF protection bypass with allow_http: true ---
+  describe "SSRF bypass with allow_http: true" do
+    it "allows jwks_uri resolving to 127.0.0.1 when allow_http: true" do
+      allow(Resolv).to receive(:getaddresses).with("localhost").and_return(["127.0.0.1"])
+
+      cache = described_class.new(jwks_uri: "http://localhost/jwks", allow_http: true)
+      expect(cache.instance_variable_get(:@jwks_uri)).to eq("http://localhost/jwks")
+    end
+
+    it "allows jwks_uri resolving to 10.x.x.x when allow_http: true" do
+      allow(Resolv).to receive(:getaddresses).with("keycloak.local").and_return(["10.0.0.5"])
+
+      cache = described_class.new(jwks_uri: "http://keycloak.local/jwks", allow_http: true)
+      expect(cache.instance_variable_get(:@jwks_uri)).to eq("http://keycloak.local/jwks")
+    end
+
+    it "allows jwks_uri resolving to 192.168.x.x when allow_http: true" do
+      allow(Resolv).to receive(:getaddresses).with("keycloak.home").and_return(["192.168.1.50"])
+
+      cache = described_class.new(jwks_uri: "http://keycloak.home/jwks", allow_http: true)
+      expect(cache.instance_variable_get(:@jwks_uri)).to eq("http://keycloak.home/jwks")
+    end
+
+    it "allows jwks_uri resolving to ::1 when allow_http: true" do
+      allow(Resolv).to receive(:getaddresses).with("ipv6loopback.local").and_return(["::1"])
+
+      cache = described_class.new(jwks_uri: "http://ipv6loopback.local/jwks", allow_http: true)
+      expect(cache.instance_variable_get(:@jwks_uri)).to eq("http://ipv6loopback.local/jwks")
+    end
+
+    it "still blocks private IPs when allow_http: false (default)" do
+      allow(Resolv).to receive(:getaddresses).with("localhost").and_return(["127.0.0.1"])
+
+      expect {
+        described_class.new(jwks_uri: "https://localhost/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+      }
+    end
+  end
 end

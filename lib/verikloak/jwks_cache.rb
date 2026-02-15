@@ -61,7 +61,7 @@ module Verikloak
         )
       end
 
-      validate_not_private!(clean_jwks_uri)
+      validate_not_private!(clean_jwks_uri) unless allow_http
 
       @jwks_uri    = clean_jwks_uri
       @connection  = connection || Verikloak::HTTP.default_connection

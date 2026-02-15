@@ -267,10 +267,13 @@ module Verikloak
 
     # Validates that the redirect target does not resolve to a private/internal IP.
     # IPv4-mapped IPv6 addresses are normalised before comparison.
+    # Skipped when `@allow_http` is true (development mode).
     # @api private
     # @param uri [URI] Parsed redirect target
     # @raise [DiscoveryError]
     def validate_redirect_not_private!(uri)
+      return if @allow_http
+
       host = uri.host
       return unless host
 
