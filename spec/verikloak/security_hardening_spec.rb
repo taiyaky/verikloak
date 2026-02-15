@@ -271,4 +271,114 @@ RSpec.describe "Verikloak::Middleware security hardening" do
       expect(cache.instance_variable_get(:@jwks_uri)).to eq("https://example.com/jwks")
     end
   end
+
+  describe "JwksCache SSRF protection (jwks_uri)" do
+    it "blocks jwks_uri that resolves to 10.x.x.x (RFC 1918)" do
+      allow(Resolv).to receive(:getaddresses).with("internal.example.com").and_return(["10.0.0.1"])
+
+      expect {
+        Verikloak::JwksCache.new(jwks_uri: "https://internal.example.com/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+        expect(e.message).to match(/private.*internal/i)
+      }
+    end
+
+    it "blocks jwks_uri that resolves to 172.16.x.x (RFC 1918)" do
+      allow(Resolv).to receive(:getaddresses).with("intranet.example.com").and_return(["172.16.0.1"])
+
+      expect {
+        Verikloak::JwksCache.new(jwks_uri: "https://intranet.example.com/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+      }
+    end
+
+    it "blocks jwks_uri that resolves to 192.168.x.x (RFC 1918)" do
+      allow(Resolv).to receive(:getaddresses).with("home.example.com").and_return(["192.168.1.100"])
+
+      expect {
+        Verikloak::JwksCache.new(jwks_uri: "https://home.example.com/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+      }
+    end
+
+    it "blocks jwks_uri that resolves to loopback (127.0.0.1)" do
+      allow(Resolv).to receive(:getaddresses).with("localhost").and_return(["127.0.0.1"])
+
+      expect {
+        Verikloak::JwksCache.new(jwks_uri: "https://localhost/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+        expect(e.message).to match(/private.*internal/i)
+      }
+    end
+
+    it "blocks jwks_uri that resolves to IPv6 loopback (::1)" do
+      allow(Resolv).to receive(:getaddresses).with("ipv6loopback.example.com").and_return(["::1"])
+
+      expect {
+        Verikloak::JwksCache.new(jwks_uri: "https://ipv6loopback.example.com/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+      }
+    end
+
+    it "blocks jwks_uri that resolves to link-local (169.254.x.x)" do
+      allow(Resolv).to receive(:getaddresses).with("metadata.example.com").and_return(["169.254.169.254"])
+
+      expect {
+        Verikloak::JwksCache.new(jwks_uri: "https://metadata.example.com/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+      }
+    end
+
+    it "blocks jwks_uri with IPv4-mapped IPv6 loopback (::ffff:127.0.0.1)" do
+      allow(Resolv).to receive(:getaddresses).with("mapped.example.com").and_return(["::ffff:127.0.0.1"])
+
+      expect {
+        Verikloak::JwksCache.new(jwks_uri: "https://mapped.example.com/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+        expect(e.message).to match(/private.*internal/i)
+      }
+    end
+
+    it "blocks jwks_uri with IPv4-mapped IPv6 private address (::ffff:10.0.0.1)" do
+      allow(Resolv).to receive(:getaddresses).with("mapped-private.example.com").and_return(["::ffff:10.0.0.1"])
+
+      expect {
+        Verikloak::JwksCache.new(jwks_uri: "https://mapped-private.example.com/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+        expect(e.message).to match(/private.*internal/i)
+      }
+    end
+
+    it "allows jwks_uri that resolves to a public IP" do
+      allow(Resolv).to receive(:getaddresses).with("public.example.com").and_return(["93.184.216.34"])
+
+      cache = Verikloak::JwksCache.new(jwks_uri: "https://public.example.com/jwks")
+      expect(cache.instance_variable_get(:@jwks_uri)).to eq("https://public.example.com/jwks")
+    end
+
+    it "allows jwks_uri when hostname resolves to multiple addresses (all public)" do
+      allow(Resolv).to receive(:getaddresses).with("cdn.example.com").and_return(["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"])
+
+      cache = Verikloak::JwksCache.new(jwks_uri: "https://cdn.example.com/jwks")
+      expect(cache.instance_variable_get(:@jwks_uri)).to eq("https://cdn.example.com/jwks")
+    end
+
+    it "blocks jwks_uri when any resolved address is private (mixed public/private)" do
+      allow(Resolv).to receive(:getaddresses).with("mixed.example.com").and_return(["93.184.216.34", "10.0.0.1"])
+
+      expect {
+        Verikloak::JwksCache.new(jwks_uri: "https://mixed.example.com/jwks")
+      }.to raise_error(Verikloak::JwksCacheError) { |e|
+        expect(e.code).to eq("jwks_ssrf_blocked")
+      }
+    end
+  end
 end
