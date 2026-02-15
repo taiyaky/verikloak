@@ -199,18 +199,25 @@ module Verikloak
       # Pass through our own structured errors without rewrapping
       raise e
     rescue *jwt_errors => e
-      code = case e
-             when JWT::ExpiredSignature then 'expired_token'
-             when JWT::ImmatureSignature then 'not_yet_valid'
-             when JWT::InvalidIssuerError then 'invalid_issuer'
-             when JWT::InvalidAudError then 'invalid_audience'
-             when defined?(JWT::VerificationError) && e.is_a?(JWT::VerificationError) then 'invalid_signature'
-             when defined?(JWT::IncorrectAlgorithm) && e.is_a?(JWT::IncorrectAlgorithm) then 'unsupported_algorithm'
-             else 'invalid_token'
-             end
+      code = classify_jwt_error(e)
       raise TokenDecoderError.new(jwt_error_message(e), code: code)
     rescue StandardError => e
       raise TokenDecoderError.new("Unexpected token verification error: #{e.message}", code: 'invalid_token')
+    end
+
+    # Map a JWT exception to a machine-friendly error code.
+    #
+    # @param error [Exception]
+    # @return [String]
+    def classify_jwt_error(error)
+      return 'expired_token'        if error.is_a?(JWT::ExpiredSignature)
+      return 'not_yet_valid'        if error.is_a?(JWT::ImmatureSignature)
+      return 'invalid_issuer'       if error.is_a?(JWT::InvalidIssuerError)
+      return 'invalid_audience'     if error.is_a?(JWT::InvalidAudError)
+      return 'unsupported_algorithm' if defined?(JWT::IncorrectAlgorithm) && error.is_a?(JWT::IncorrectAlgorithm)
+      return 'invalid_signature' if defined?(JWT::VerificationError) && error.is_a?(JWT::VerificationError)
+
+      'invalid_token'
     end
 
     # JWT-related exceptions to catch and rewrap.
