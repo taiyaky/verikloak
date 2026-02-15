@@ -2,5 +2,5 @@
 
 module Verikloak
   # Defines the current version of the Verikloak gem.
-  VERSION = '0.4.0'
+  VERSION = '0.4.1'
 end

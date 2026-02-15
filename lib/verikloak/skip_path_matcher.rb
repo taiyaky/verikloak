@@ -12,6 +12,7 @@ module Verikloak
   # * `'/'`           — matches only the root path
   # * `'/foo'`        — exact-match only (matches `/foo` but **not** `/foo/...`)
   # * `'/foo/*'`      — prefix match (matches `/foo` and any nested path under it)
+  # * `Regexp`        — matched against the normalized path via `Regexp#match?`
   module SkipPathMatcher
     private
 
@@ -23,8 +24,9 @@ module Verikloak
       np = normalize_path(path)
       return true if @skip_root && np == '/'
       return true if @skip_exacts.include?(np)
+      return true if @skip_prefixes.any? { |prefix| np == prefix || np.start_with?("#{prefix}/") }
 
-      @skip_prefixes.any? { |prefix| np == prefix || np.start_with?("#{prefix}/") }
+      @skip_regexps.any? { |re| re.match?(np) }
     end
 
     # Normalizes paths for stable comparisons:
@@ -46,16 +48,23 @@ module Verikloak
     # * `@skip_root` — whether `'/'` is present
     # * `@skip_exacts` — exact-match set (e.g. `'/health'`)
     # * `@skip_prefixes` — wildcard prefixes for `'/*'` (e.g. `'/public'`)
+    # * `@skip_regexps` — Regexp patterns matched via `Regexp#match?`
     #
-    # @param paths [Array<String>]
+    # @param paths [Array<String, Regexp>]
     # @return [void]
     def compile_skip_paths(paths)
       @skip_root     = false
       @skip_exacts   = Set.new
       @skip_prefixes = []
+      @skip_regexps  = []
 
       Array(paths).each do |raw|
         next if raw.nil?
+
+        if raw.is_a?(Regexp)
+          @skip_regexps << raw
+          next
+        end
 
         s = raw.to_s.strip
         next if s.empty?
