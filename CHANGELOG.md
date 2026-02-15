@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.1] - 2026-02-15
+
+### Fixed
+- **SSRF protection bypass for development mode**: `allow_http: true` now also skips private IP validation in both `JwksCache` (initial `jwks_uri` resolution) and `Discovery` (redirect target resolution). Previously, even with `allow_http: true`, connections to Keycloak on private/loopback IPs (e.g. `127.0.0.1`, `10.x.x.x`, `192.168.x.x`) were blocked by SSRF protection, making local development impossible.
+- **Inconsistent SSRF behaviour**: `Discovery#fetch!` did not validate the initial discovery URL against private IPs (only redirect targets), while `JwksCache` unconditionally blocked private IPs at initialisation. Both now consistently skip private IP checks when `allow_http: true`.
+
+---
+
 ## [1.0.0] - 2026-02-15
 
 ### Security

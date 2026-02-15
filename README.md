@@ -18,7 +18,7 @@ Verikloak is a plug-and-play solution for Ruby (especially Rails API) apps that 
 - Rails/Rack middleware support
 - Faraday-based customizable HTTP layer
 - HTTPS enforcement for Discovery and JWKs endpoints (with `allow_http:` escape hatch for development)
-- SSRF protection — discovery redirect targets **and** `jwks_uri` values validated against private IP ranges (including IPv4-mapped IPv6 normalisation)
+- SSRF protection — discovery redirect targets **and** `jwks_uri` values validated against private IP ranges (including IPv4-mapped IPv6 normalisation); automatically bypassed with `allow_http: true` for local development
 - HTTPS redirect enforcement — redirect targets are scheme-checked to prevent HTTPS→HTTP downgrade
 - JWT size limit (8 KB) to mitigate denial-of-service via oversized tokens
 - Header injection prevention in `WWW-Authenticate` responses
@@ -225,7 +225,7 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `discovery_redirect_error` | 503 Service Unavailable   | Discovery redirect error: missing/invalid Location header, redirect target resolves to a private IP (SSRF protection), redirect uses non-HTTPS scheme, or unsupported scheme |
 | `insecure_discovery_url`   | 503 Service Unavailable   | Discovery URL uses `http://` and `allow_http: true` is not set                               |
 | `insecure_jwks_uri`        | 503 Service Unavailable   | JWKs URI uses `http://` and `allow_http: true` is not set                                    |
-| `jwks_ssrf_blocked`        | 503 Service Unavailable   | JWKs URI hostname resolves to a private/loopback IP address (SSRF protection)                |
+| `jwks_ssrf_blocked`        | 503 Service Unavailable   | JWKs URI hostname resolves to a private/loopback IP address (SSRF protection; bypassed when `allow_http: true`) |
 | `internal_server_error`    | 500 Internal Server Error | Unexpected internal error (catch-all)                                                        |
 
 > **Note:** The `decode_with_public_key` method ensures consistent error codes for all JWT verification failures.  
@@ -250,7 +250,7 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `user_env_key`  | No       | Rack env key for decoded claims. Defaults to `verikloak.user`. |
 | `realm`         | No       | Value used in the `WWW-Authenticate` header. Defaults to `verikloak`. |
 | `logger`        | No       | Logger for unexpected internal failures (responds to `error`, optionally `debug`). |
-| `allow_http`    | No       | When `false` (default), `Discovery` and `JwksCache` reject plain `http://` URLs. Set `true` **only** for local development against a non-TLS Keycloak instance. |
+| `allow_http`    | No       | When `false` (default), `Discovery` and `JwksCache` reject plain `http://` URLs and block private/loopback IPs (SSRF protection). Set `true` **only** for local development against a non-TLS Keycloak instance — this also bypasses private IP checks so that Keycloak on `localhost` or LAN addresses works out of the box. |
 
 #### Option: `skip_paths`
 

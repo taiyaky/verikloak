@@ -404,4 +404,81 @@ RSpec.describe Verikloak::Discovery do
       }
     end
   end
+
+  # --- SSRF redirect bypass with allow_http: true ---
+  describe "SSRF redirect bypass with allow_http: true" do
+    it "allows redirect to private IP (192.168.x.x) when allow_http: true" do
+      stub_request(:get, "http://dev.local/.well-known/openid-configuration").to_return(
+        status: 302,
+        headers: { "Location" => "http://keycloak.local/config" }
+      )
+      stub_request(:get, "http://keycloak.local/config").to_return(
+        status: 200,
+        body: { jwks_uri: "http://keycloak.local/jwks", issuer: "http://keycloak.local/" }.to_json,
+        headers: { "Content-Type" => "application/json" }
+      )
+      allow(Resolv).to receive(:getaddresses).with("keycloak.local").and_return(["192.168.1.50"])
+
+      discovery = described_class.new(
+        discovery_url: "http://dev.local/.well-known/openid-configuration",
+        allow_http: true
+      )
+      json = discovery.fetch!
+      expect(json["issuer"]).to eq("http://keycloak.local/")
+    end
+
+    it "allows redirect to loopback (127.0.0.1) when allow_http: true" do
+      stub_request(:get, "http://dev.local/.well-known/openid-configuration").to_return(
+        status: 302,
+        headers: { "Location" => "http://localhost/config" }
+      )
+      stub_request(:get, "http://localhost/config").to_return(
+        status: 200,
+        body: { jwks_uri: "http://localhost/jwks", issuer: "http://localhost/" }.to_json,
+        headers: { "Content-Type" => "application/json" }
+      )
+      allow(Resolv).to receive(:getaddresses).with("localhost").and_return(["127.0.0.1"])
+
+      discovery = described_class.new(
+        discovery_url: "http://dev.local/.well-known/openid-configuration",
+        allow_http: true
+      )
+      json = discovery.fetch!
+      expect(json["issuer"]).to eq("http://localhost/")
+    end
+
+    it "allows redirect to 10.x.x.x when allow_http: true" do
+      stub_request(:get, "http://dev.local/.well-known/openid-configuration").to_return(
+        status: 302,
+        headers: { "Location" => "http://internal.local/config" }
+      )
+      stub_request(:get, "http://internal.local/config").to_return(
+        status: 200,
+        body: { jwks_uri: "http://internal.local/jwks", issuer: "http://internal.local/" }.to_json,
+        headers: { "Content-Type" => "application/json" }
+      )
+      allow(Resolv).to receive(:getaddresses).with("internal.local").and_return(["10.0.0.5"])
+
+      discovery = described_class.new(
+        discovery_url: "http://dev.local/.well-known/openid-configuration",
+        allow_http: true
+      )
+      json = discovery.fetch!
+      expect(json["issuer"]).to eq("http://internal.local/")
+    end
+
+    it "still blocks redirect to private IP when allow_http: false (default)" do
+      stub_request(:get, discovery_url).to_return(
+        status: 302,
+        headers: { "Location" => "https://internal.example.com/config" }
+      )
+      allow(Resolv).to receive(:getaddresses).with("internal.example.com").and_return(["10.0.0.1"])
+
+      discovery = described_class.new(discovery_url: discovery_url)
+      expect { discovery.fetch! }.to raise_error(Verikloak::DiscoveryError) { |e|
+        expect(e.code).to eq("discovery_redirect_error")
+        expect(e.message).to match(/private.*internal/i)
+      }
+    end
+  end
 end
