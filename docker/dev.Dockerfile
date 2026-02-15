@@ -30,13 +30,11 @@ RUN bundle install
 # App source
 COPY . .
 
-# Remove build dependencies to slim the image
-RUN apk del .build-deps
-
 # Run as non-root for safety in CI/dev, and match host UID/GID for bind-mount write access
 ARG UID=1000
 ARG GID=1000
 RUN addgroup -S -g $GID app \
     && adduser -S -u $UID -G app app \
-    && chown -R app:app /app
+    && chown -R app:app /app \
+    && chown -R app:app /usr/local/bundle
 USER app

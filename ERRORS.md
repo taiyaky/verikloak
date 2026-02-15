@@ -61,7 +61,9 @@ Errors raised during fetching or parsing of the OIDC discovery document or JWKs 
 | `jwks_parse_failed`           | `Failed to parse JWKs: JSON::ParserError`           |
 | `discovery_metadata_fetch_failed` | `Failed to fetch discovery document: 404 Not Found` |
 | `discovery_metadata_invalid`  | `Failed to parse discovery document: unexpected format` |
-| `discovery_redirect_error`    | `Redirect without Location header`, `Too many redirects (max 3)`, or `Redirect Location is invalid: ...` |
+| `discovery_redirect_error`    | `Redirect without Location header`, `Too many redirects (max 3)`, `Redirect Location is invalid: ...`, or `Redirect target resolves to a private/internal address (<host>)` |
+| `insecure_discovery_url`      | `Discovery URL must use HTTPS. Set allow_http: true to permit plain HTTP (development only).` |
+| `insecure_jwks_uri`           | `JWKs URI must use HTTPS. Set allow_http: true to permit plain HTTP (development only).` |
 
 ---
 
@@ -75,6 +77,7 @@ Raised directly by the middleware in certain conditions.
 | `missing_authorization_header` | `Missing Authorization header`                   |
 | `invalid_authorization_header` | `Invalid Authorization header format`            |
 | `jwks_cache_miss`         | `JWKs cache is empty, cannot verify token`         |
+| `invalid_token`           | `Token exceeds maximum allowed size`               |
 
 ---
 

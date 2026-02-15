@@ -38,13 +38,27 @@ module Verikloak
   class JwksCache
     # @param jwks_uri [String] HTTPS URL of the JWKs endpoint
     # @param connection [Faraday::Connection, nil] Optional Faraday connection for HTTP requests
+    # @param allow_http [Boolean] When false (default), raises on plain HTTP URIs. Set true for local development only.
     # @raise [JwksCacheError] if the URI is not an HTTP(S) URL
-    def initialize(jwks_uri:, connection: nil)
-      unless jwks_uri.is_a?(String) && jwks_uri.strip.match?(%r{^https?://})
+    def initialize(jwks_uri:, connection: nil, allow_http: false)
+      unless jwks_uri.is_a?(String)
         raise JwksCacheError.new('Invalid JWKs URI: must be a non-empty HTTP(S) URL', code: 'jwks_fetch_failed')
       end
 
-      @jwks_uri    = jwks_uri
+      clean_jwks_uri = jwks_uri.strip
+
+      unless clean_jwks_uri.match?(%r{^https?://})
+        raise JwksCacheError.new('Invalid JWKs URI: must be a non-empty HTTP(S) URL', code: 'jwks_fetch_failed')
+      end
+
+      unless allow_http || clean_jwks_uri.start_with?('https://')
+        raise JwksCacheError.new(
+          'JWKs URI must use HTTPS. Set allow_http: true to permit plain HTTP (development only).',
+          code: 'insecure_jwks_uri'
+        )
+      end
+
+      @jwks_uri    = clean_jwks_uri
       @connection  = connection || Verikloak::HTTP.default_connection
       @cached_keys = nil
       @etag        = nil

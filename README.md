@@ -17,6 +17,12 @@ Verikloak is a plug-and-play solution for Ruby (especially Rails API) apps that 
 - `aud`, `iss`, `exp`, `nbf` claim validation
 - Rails/Rack middleware support
 - Faraday-based customizable HTTP layer
+- HTTPS enforcement for Discovery and JWKs endpoints (with `allow_http:` escape hatch for development)
+- SSRF protection — redirect targets validated against private IP ranges (including IPv4-mapped IPv6 normalisation)
+- HTTPS redirect enforcement — redirect targets are scheme-checked to prevent HTTPS→HTTP downgrade
+- JWT size limit (8 KB) to mitigate denial-of-service via oversized tokens
+- Header injection prevention in `WWW-Authenticate` responses
+- URL normalisation — leading/trailing whitespace stripped from discovery and JWKs URLs
 
 ## Installation
 
@@ -67,7 +73,8 @@ config.middleware.use Verikloak::Middleware,
   token_env_key: "rack.session.token",     # Custom token storage key
   user_env_key: "rack.session.claims",     # Custom user claims storage key
   realm: "my-api",                         # Custom realm for WWW-Authenticate header
-  logger: Rails.logger                     # Logger for internal errors
+  logger: Rails.logger,                    # Logger for internal errors
+  allow_http: false                        # Set true only for local development (disables HTTPS enforcement)
 ```
 
 **Additional middleware options:**
@@ -215,11 +222,14 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `jwks_cache_miss`          | 503 Service Unavailable   | JWKs cache is empty (e.g., 304 Not Modified without prior cache)                             |
 | `discovery_metadata_fetch_failed` | 503 Service Unavailable   | Failed to fetch OIDC discovery document                                               |
 | `discovery_metadata_invalid` | 503 Service Unavailable   | Failed to parse OIDC discovery document                                                     |
-| `discovery_redirect_error` | 503 Service Unavailable   | Discovery response was a redirect without a valid Location header                           |
+| `discovery_redirect_error` | 503 Service Unavailable   | Discovery redirect error: missing/invalid Location header, redirect target resolves to a private IP (SSRF protection), redirect uses non-HTTPS scheme, or unsupported scheme |
+| `insecure_discovery_url`   | 503 Service Unavailable   | Discovery URL uses `http://` and `allow_http: true` is not set                               |
+| `insecure_jwks_uri`        | 503 Service Unavailable   | JWKs URI uses `http://` and `allow_http: true` is not set                                    |
 | `internal_server_error`    | 500 Internal Server Error | Unexpected internal error (catch-all)                                                        |
 
 > **Note:** The `decode_with_public_key` method ensures consistent error codes for all JWT verification failures.  
-> It may raise `invalid_signature`, `unsupported_algorithm`, `expired_token`, `invalid_issuer`, `invalid_audience`, or `not_yet_valid` depending on the verification outcome.
+> It may raise `invalid_signature`, `unsupported_algorithm`, `expired_token`, `invalid_issuer`, `invalid_audience`, or `not_yet_valid` depending on the verification outcome.  
+> Additionally, tokens exceeding 8 KB are rejected with `invalid_token` before decoding to mitigate denial-of-service.
 
 ## Configuration Options
 
@@ -239,6 +249,7 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `user_env_key`  | No       | Rack env key for decoded claims. Defaults to `verikloak.user`. |
 | `realm`         | No       | Value used in the `WWW-Authenticate` header. Defaults to `verikloak`. |
 | `logger`        | No       | Logger for unexpected internal failures (responds to `error`, optionally `debug`). |
+| `allow_http`    | No       | When `false` (default), `Discovery` and `JwksCache` reject plain `http://` URLs. Set `true` **only** for local development against a non-TLS Keycloak instance. |
 
 #### Option: `skip_paths`
 
@@ -373,6 +384,8 @@ Verikloak consists of modular components, each with a focused responsibility:
 | `HTTP`          | Provides shared Faraday connection with retries/timeouts | Network layer|
 | `JwksCache`     | Fetches & caches JWKs public keys (with ETag)        | Cache layer  |
 | `TokenDecoder`  | Decodes and verifies JWTs (signature, exp, nbf, iss, aud) | Crypto layer |
+| `ErrorResponse`  | RFC 6750 compliant JSON error response builder       | Core layer   |
+| `SkipPathMatcher`| Reusable skip-path normalization and matching mixin  | Core layer   |
 | `Errors`        | Centralized error hierarchy                          | Core layer   |
 
 This separation enables better testing, modular reuse, and flexibility.

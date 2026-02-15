@@ -1,12 +1,29 @@
 # frozen_string_literal: true
 
 require 'faraday'
+require 'ipaddr'
 require 'json'
+require 'resolv'
 require 'uri'
 
 require 'verikloak/http'
 
 module Verikloak
+  # Private IP ranges that must not be targets of redirects (SSRF protection).
+  # Includes RFC 1918, loopback, link-local, and IPv6 equivalents.
+  # @api private
+  PRIVATE_IP_RANGES = [
+    IPAddr.new('10.0.0.0/8'),
+    IPAddr.new('172.16.0.0/12'),
+    IPAddr.new('192.168.0.0/16'),
+    IPAddr.new('127.0.0.0/8'),
+    IPAddr.new('169.254.0.0/16'),
+    IPAddr.new('0.0.0.0/8'),
+    IPAddr.new('::1/128'),
+    IPAddr.new('fc00::/7'),
+    IPAddr.new('fe80::/10')
+  ].freeze
+
   # Fetches and caches the OpenID Connect Discovery document.
   #
   # This class retrieves the discovery metadata from an OpenID Connect provider
@@ -43,16 +60,27 @@ module Verikloak
     # @param discovery_url [String] The full URL to the `.well-known/openid-configuration`.
     # @param connection [Faraday::Connection] Optional Faraday client (for DI/tests).
     # @param cache_ttl [Integer] Cache TTL in seconds (default: 3600).
+    # @param allow_http [Boolean] When false (default), raises on plain HTTP URLs. Set true for local development only.
     # @raise [DiscoveryError] when `discovery_url` is not a valid HTTP(S) URL
-    def initialize(discovery_url:, connection: Verikloak::HTTP.default_connection, cache_ttl: 3600)
-      unless discovery_url.is_a?(String) && discovery_url.strip.match?(%r{^https?://})
+    def initialize(discovery_url:, connection: Verikloak::HTTP.default_connection, cache_ttl: 3600, allow_http: false)
+      normalized_url = discovery_url.is_a?(String) ? discovery_url.strip : discovery_url
+
+      unless normalized_url.is_a?(String) && normalized_url.match?(%r{^https?://})
         raise DiscoveryError.new('Invalid discovery URL: must be a non-empty HTTP(S) URL',
                                  code: 'invalid_discovery_url')
       end
 
-      @discovery_url = discovery_url
+      unless allow_http || normalized_url.start_with?('https://')
+        raise DiscoveryError.new(
+          'Discovery URL must use HTTPS. Set allow_http: true to permit plain HTTP (development only).',
+          code: 'insecure_discovery_url'
+        )
+      end
+
+      @discovery_url = normalized_url
       @conn          = connection
       @cache_ttl     = cache_ttl
+      @allow_http    = allow_http
       @cached_json   = nil
       @fetched_at    = nil
       @mutex         = Mutex.new
@@ -98,30 +126,28 @@ module Verikloak
     # @return [Hash]
     # @raise [DiscoveryError]
     def handle_final_response(response)
+      return parse_json(response.body) if response.status == 200
+
+      raise DiscoveryError.new(failure_message(response), code: 'discovery_metadata_fetch_failed')
+    end
+
+    # Builds the error message for non-200 final responses.
+    # @api private
+    def failure_message(response)
       status = response.status
-      return parse_json(response.body) if status == 200
+      return "Discovery endpoint server error: status #{status}" if (500..599).cover?(status)
+      return "Failed to fetch discovery document: status #{status}" unless status == 404
 
-      if status == 404
-        # If the 404 occurred after a redirect (final URL differs from the original discovery URL),
-        # keep the generic message to align with redirect tests; otherwise use a specific "not found" message.
-        final_url = response.respond_to?(:env) && response.env&.url ? response.env.url.to_s : nil
-        message = if final_url && final_url != @discovery_url
-                    'Failed to fetch discovery document: status 404'
-                  else
-                    'Discovery document not found (404)'
-                  end
-        raise DiscoveryError.new(message, code: 'discovery_metadata_fetch_failed')
+      final_url = response.respond_to?(:env) && response.env&.url&.to_s
+      if final_url && final_url != @discovery_url
+        'Failed to fetch discovery document: status 404'
+      else
+        'Discovery document not found (404)'
       end
-      if (500..599).cover?(status)
-        raise DiscoveryError.new("Discovery endpoint server error: status #{status}",
-                                 code: 'discovery_metadata_fetch_failed')
-      end
-
-      raise DiscoveryError.new("Failed to fetch discovery document: status #{status}",
-                               code: 'discovery_metadata_fetch_failed')
     end
 
     # Follows HTTP redirects up to `max_hops`, resolving relative `Location` values.
+    # Validates that redirect targets do not point to private/internal networks (SSRF protection).
     # @api private
     # @param response [Faraday::Response]
     # @param max_hops [Integer]
@@ -141,6 +167,7 @@ module Verikloak
 
         location = location_from(current)
         url = absolutize_location(location, base)
+        validate_redirect_target!(url)
         current = @conn.get(url)
         base = url
         hops += 1
@@ -163,9 +190,7 @@ module Verikloak
     # @return [String] absolute or relative URL string
     # @raise [DiscoveryError]
     def location_from(response)
-      raw = response.headers || {}
-      headers = {}
-      raw.each { |k, v| headers[k.to_s.downcase] = v }
+      headers = (response.headers || {}).transform_keys { |k| k.to_s.downcase }
       location = headers['location'].to_s.strip
       raise DiscoveryError.new('Redirect without Location header', code: 'discovery_redirect_error') if location.empty?
 
@@ -199,16 +224,70 @@ module Verikloak
       raise DiscoveryError.new('Discovery response is not valid JSON', code: 'discovery_metadata_invalid')
     end
 
-    # Validates HTTP response success status (helper, currently unused).
+    # Validates that a redirect target URL uses a permitted scheme and does not resolve
+    # to a private/internal IP address.
+    #
+    # Scheme check: rejects non-HTTP(S) schemes unconditionally, and rejects plain HTTP
+    # when `@allow_http` is false — preventing HTTPS→HTTP downgrade attacks.
+    #
+    # SSRF check: resolves the target hostname and compares each address against
+    # {PRIVATE_IP_RANGES}. IPv4-mapped IPv6 addresses (e.g. `::ffff:127.0.0.1`) are
+    # normalised to their native IPv4 form before comparison.
+    #
     # @api private
-    # @param response [Faraday::Response]
-    # @return [void]
-    # @raise [DiscoveryError]
-    def validate_http_status!(response)
-      return if response.success?
+    # @param url [String] The redirect target URL
+    # @raise [DiscoveryError] when the target uses a disallowed scheme or resolves to a private IP
+    def validate_redirect_target!(url)
+      uri = URI.parse(url)
+      validate_redirect_scheme!(uri)
+      validate_redirect_not_private!(uri)
+    rescue URI::InvalidURIError => e
+      raise DiscoveryError.new("Invalid redirect URL: #{e.message}", code: 'discovery_redirect_error')
+    end
 
-      raise DiscoveryError.new("Failed to fetch discovery document: status #{response.status}",
-                               code: 'discovery_metadata_fetch_failed')
+    # Validates that the redirect URI uses an allowed HTTP(S) scheme.
+    # @api private
+    # @param uri [URI] Parsed redirect target
+    # @raise [DiscoveryError]
+    def validate_redirect_scheme!(uri)
+      unless %w[http https].include?(uri.scheme)
+        raise DiscoveryError.new(
+          "Redirect target uses unsupported scheme: #{uri.scheme}",
+          code: 'discovery_redirect_error'
+        )
+      end
+
+      return if @allow_http || uri.scheme == 'https'
+
+      raise DiscoveryError.new(
+        'Redirect target must use HTTPS (set allow_http: true for development)',
+        code: 'discovery_redirect_error'
+      )
+    end
+
+    # Validates that the redirect target does not resolve to a private/internal IP.
+    # IPv4-mapped IPv6 addresses are normalised before comparison.
+    # @api private
+    # @param uri [URI] Parsed redirect target
+    # @raise [DiscoveryError]
+    def validate_redirect_not_private!(uri)
+      host = uri.host
+      return unless host
+
+      Resolv.getaddresses(host).each do |addr|
+        ip = IPAddr.new(addr)
+        ip = ip.native if ip.ipv4_mapped?
+        next unless PRIVATE_IP_RANGES.any? { |range| range.include?(ip) }
+
+        raise DiscoveryError.new(
+          "Redirect target resolves to a private/internal address (#{host})",
+          code: 'discovery_redirect_error'
+        )
+      end
+    rescue IPAddr::InvalidAddressError
+      # If the address cannot be parsed, allow the request to proceed
+      # (Faraday will handle the actual connection error)
+      nil
     end
 
     # Wraps a block with network and parsing error handling and re-raising as {DiscoveryError}.

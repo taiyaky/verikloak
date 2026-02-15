@@ -8,10 +8,10 @@ gemspec
 
 group :development, :test do
   gem 'bundler-audit', require: false
-  gem 'rspec', '~> 3.12'
+  gem 'rspec', '~> 3.13'
   gem 'rspec_junit_formatter'
   gem 'rubocop', require: false
-  gem 'rubocop-rspec', require: false
+  gem 'rubocop-rspec', '~> 3.9', require: false
 end
 
 group :test do

@@ -24,9 +24,9 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = '>= 3.1'
 
   # Runtime dependencies
-  spec.add_dependency 'faraday', '>= 2.0', '< 3.0'
-  spec.add_dependency 'faraday-retry', '>= 2.0', '< 3.0'
-  spec.add_dependency 'json', '~> 2.6'
+  spec.add_dependency 'faraday', '>= 2.14.1', '< 3.0'
+  spec.add_dependency 'faraday-retry', '>= 2.4.0', '< 3.0'
+  spec.add_dependency 'json', '~> 2.18'
   spec.add_dependency 'jwt', '>= 2.7', '< 4.0'
 
   # Metadata for RubyGems
