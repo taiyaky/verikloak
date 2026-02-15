@@ -89,6 +89,35 @@ RSpec.describe Verikloak::SkipPathMatcher do
         expect(matcher.send(:skip?, "/other")).to be false
       end
     end
+
+    context "with Regexp patterns" do
+      before { matcher.send(:compile_skip_paths, [/\A\/api\/v\d+\/public/]) }
+
+      it "matches paths that satisfy the regexp" do
+        expect(matcher.send(:skip?, "/api/v1/public/docs")).to be true
+        expect(matcher.send(:skip?, "/api/v2/public/info")).to be true
+      end
+
+      it "does not match paths outside the regexp" do
+        expect(matcher.send(:skip?, "/api/v1/private/data")).to be false
+      end
+    end
+
+    context "with mixed String and Regexp patterns" do
+      before { matcher.send(:compile_skip_paths, ["/up", /\A\/health/]) }
+
+      it "matches exact string paths" do
+        expect(matcher.send(:skip?, "/up")).to be true
+      end
+
+      it "matches regexp paths" do
+        expect(matcher.send(:skip?, "/health/live")).to be true
+      end
+
+      it "does not match unrelated paths" do
+        expect(matcher.send(:skip?, "/api")).to be false
+      end
+    end
   end
 
   describe "#normalize_path" do

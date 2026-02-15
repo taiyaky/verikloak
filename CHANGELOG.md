@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.1] - 2026-02-15
+
+### Added
+- `Verikloak::SkipPathMatcher` now supports `Regexp` patterns alongside string paths, restoring compatibility with `verikloak-audience` skip_paths Regexp usage
+
+---
+
 ## [0.4.0] - 2026-02-15
 
 ### Security
