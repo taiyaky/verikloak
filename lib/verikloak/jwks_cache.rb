@@ -162,6 +162,9 @@ module Verikloak
 
     # Validates that the JWKs URI does not resolve to a private/internal IP address (SSRF protection).
     #
+    # Skipped when `allow_http: true` is set (development mode), since local Keycloak instances
+    # typically run on private/loopback addresses.
+    #
     # The discovery redirect flow already validates redirect targets, but the `jwks_uri` value
     # extracted from the discovery JSON document itself was not previously validated, allowing a
     # compromised or malicious discovery endpoint to point JWKs fetching at internal services.
