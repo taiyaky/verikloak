@@ -14,7 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Header injection**: Sanitize CR/LF characters in `WWW-Authenticate` header values via `Verikloak::ErrorResponse`
 - **JWT size limit**: Reject tokens exceeding 8 KB (`MAX_TOKEN_BYTES = 8192`) to mitigate denial-of-service
 - **HTTPS enforcement**: `Discovery` and `JwksCache` now reject `http://` URLs unless `allow_http: true` is explicitly set
+- **HTTPS redirect enforcement**: Redirect targets during OIDC discovery are now scheme-checked — plain HTTP redirects are blocked unless `allow_http: true`, and non-HTTP(S) schemes (e.g. `ftp://`) are always rejected
 - **SSRF protection**: Redirect targets in OIDC discovery are validated against private IP ranges (RFC 1918, loopback, link-local)
+- **IPv4-mapped IPv6 SSRF hardening**: IPv4-mapped IPv6 addresses (e.g. `::ffff:127.0.0.1`) are normalised to native IPv4 before private-range checks, preventing bypass via mapped addresses
+- **URL normalisation**: `Discovery` and `JwksCache` now strip leading/trailing whitespace from URLs during initialisation, ensuring the validated URL matches what is used for HTTP requests
 
 ### Added
 - `Verikloak::ErrorResponse` — shared RFC 6750-compliant JSON error response builder

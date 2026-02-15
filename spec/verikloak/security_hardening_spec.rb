@@ -174,5 +174,101 @@ RSpec.describe "Verikloak::Middleware security hardening" do
         expect(e.code).to eq("discovery_redirect_error")
       }
     end
+
+    it "blocks redirects that downgrade from HTTPS to HTTP" do
+      stub_request(:get, discovery_url).to_return(
+        status: 302,
+        headers: { "Location" => "http://evil.example.com/config" }
+      )
+
+      discovery = Verikloak::Discovery.new(discovery_url: discovery_url)
+      expect { discovery.fetch! }.to raise_error(Verikloak::DiscoveryError) { |e|
+        expect(e.code).to eq("discovery_redirect_error")
+        expect(e.message).to match(/HTTPS/i)
+      }
+    end
+
+    it "allows HTTP redirect targets when allow_http: true" do
+      stub_request(:get, "http://dev.local/.well-known/openid-configuration").to_return(
+        status: 302,
+        headers: { "Location" => "http://dev.local/config" }
+      )
+      stub_request(:get, "http://dev.local/config").to_return(
+        status: 200,
+        body: { jwks_uri: "http://dev.local/jwks", issuer: "http://dev.local/" }.to_json,
+        headers: { "Content-Type" => "application/json" }
+      )
+      allow(Resolv).to receive(:getaddresses).with("dev.local").and_return(["93.184.216.34"])
+
+      discovery = Verikloak::Discovery.new(
+        discovery_url: "http://dev.local/.well-known/openid-configuration",
+        allow_http: true
+      )
+      json = discovery.fetch!
+      expect(json["issuer"]).to eq("http://dev.local/")
+    end
+
+    it "blocks redirects with non-HTTP(S) schemes (e.g. ftp://)" do
+      stub_request(:get, discovery_url).to_return(
+        status: 302,
+        headers: { "Location" => "ftp://evil.example.com/config" }
+      )
+
+      discovery = Verikloak::Discovery.new(discovery_url: discovery_url)
+      expect { discovery.fetch! }.to raise_error(Verikloak::DiscoveryError) { |e|
+        expect(e.code).to eq("discovery_redirect_error")
+        expect(e.message).to match(/unsupported scheme/i)
+      }
+    end
+
+    it "blocks redirects to IPv4-mapped IPv6 loopback (::ffff:127.0.0.1)" do
+      stub_request(:get, discovery_url).to_return(
+        status: 302,
+        headers: { "Location" => "https://mapped.example.com/config" }
+      )
+      allow(Resolv).to receive(:getaddresses).with("mapped.example.com").and_return(["::ffff:127.0.0.1"])
+
+      discovery = Verikloak::Discovery.new(discovery_url: discovery_url)
+      expect { discovery.fetch! }.to raise_error(Verikloak::DiscoveryError) { |e|
+        expect(e.code).to eq("discovery_redirect_error")
+        expect(e.message).to match(/private.*internal/i)
+      }
+    end
+
+    it "blocks redirects to IPv4-mapped IPv6 private address (::ffff:10.0.0.1)" do
+      stub_request(:get, discovery_url).to_return(
+        status: 302,
+        headers: { "Location" => "https://mapped-private.example.com/config" }
+      )
+      allow(Resolv).to receive(:getaddresses).with("mapped-private.example.com").and_return(["::ffff:10.0.0.1"])
+
+      discovery = Verikloak::Discovery.new(discovery_url: discovery_url)
+      expect { discovery.fetch! }.to raise_error(Verikloak::DiscoveryError) { |e|
+        expect(e.code).to eq("discovery_redirect_error")
+        expect(e.message).to match(/private.*internal/i)
+      }
+    end
+  end
+
+  describe "URL normalization (strip whitespace)" do
+    it "strips leading/trailing whitespace from discovery_url" do
+      padded_url = "  https://secure.example.com/.well-known/openid-configuration  "
+      stub_request(:get, "https://secure.example.com/.well-known/openid-configuration").to_return(
+        status: 200,
+        body: { jwks_uri: "https://secure.example.com/jwks", issuer: "https://secure.example.com/" }.to_json,
+        headers: { "Content-Type" => "application/json" }
+      )
+
+      discovery = Verikloak::Discovery.new(discovery_url: padded_url)
+      json = discovery.fetch!
+      expect(json["issuer"]).to eq("https://secure.example.com/")
+    end
+
+    it "strips leading/trailing whitespace from jwks_uri" do
+      padded_uri = "  https://example.com/jwks  "
+      cache = Verikloak::JwksCache.new(jwks_uri: padded_uri)
+      # Ensure the stored URI is stripped (it will be used for HTTP requests)
+      expect(cache.instance_variable_get(:@jwks_uri)).to eq("https://example.com/jwks")
+    end
   end
 end
