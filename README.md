@@ -238,7 +238,7 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `discovery_url` | Yes   | Full URL to your realm's OIDC discovery doc |
 | `audience`      | Yes   | Your client ID (checked against `aud`). Accepts a String or callable returning a String/Array per request. |
 | `issuer`        | No       | Optional override for the expected `iss` claim; defaults to the discovery `issuer`. |
-| `skip_paths`    | No       | Array of paths or wildcards to skip authentication, e.g. `['/', '/health', '/public/*']`. **Note:** Regex patterns are not supported. |
+| `skip_paths`    | No       | Array of paths, wildcards, or `Regexp` patterns to skip authentication, e.g. `['/', '/health', '/public/*', /\A\/api\/v\d+\/public/]`. |
 | `discovery`     | No       | Inject custom Discovery instance (advanced/testing) |
 | `jwks_cache`    | No       | Inject custom JwksCache instance (advanced/testing) |
 | `leeway`       | No       | Clock skew tolerance (seconds) applied during JWT verification. Defaults to `TokenDecoder::DEFAULT_LEEWAY`. |
@@ -259,17 +259,17 @@ Plain paths are exact-match only, while `/*` at the end enables prefix matching.
 For example:
 
 ```ruby
-skip_paths: ['/', '/health', '/rails/*', '/public/src']
+skip_paths: ['/', '/health', '/rails/*', '/public/src', /\A\/api\/v\d+\/public/]
 ```
 - `'/'` matches only the root path.
 - `'/health'` matches **only** `/health` (for subpaths, use `'/health/*'`).
 - `'/rails/*'` matches `/rails` itself as well as `/rails/foo`, `/rails/foo/bar`, etc.
 - `'/public/src'` matches `/public/src`, but does **not** match `/public`, any subpath like `/public/src/html` or other siblings like `/public/css`.
+- `Regexp` patterns are matched against the normalized path via `Regexp#match?`. For example, `/\A\/api\/v\d+\/public/` matches `/api/v1/public/docs`, `/api/v2/public/info`, etc.
 
 Paths **not matched** by any `skip_paths` entry will require a valid JWT.
 
-**Note:** Regex patterns are not supported. Only literal paths and `*` wildcards are allowed.  
-Internally, `*` expands to match nested paths, so patterns like `/rails/*` are valid. This differs from regex; for example, `'/rails'` alone matches only `/rails`, while `'/rails/*'` covers both `/rails` and deeper subpaths.
+Internally, `*` expands to match nested paths, so patterns like `/rails/*` are valid. `'/rails'` alone matches only `/rails`, while `'/rails/*'` covers both `/rails` and deeper subpaths. For more complex matching needs, use `Regexp` patterns.
 
 #### Option: `audience`
 
