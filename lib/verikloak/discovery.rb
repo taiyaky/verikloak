@@ -1,12 +1,29 @@
 # frozen_string_literal: true
 
 require 'faraday'
+require 'ipaddr'
 require 'json'
+require 'resolv'
 require 'uri'
 
 require 'verikloak/http'
 
 module Verikloak
+  # Private IP ranges that must not be targets of redirects (SSRF protection).
+  # Includes RFC 1918, loopback, link-local, and IPv6 equivalents.
+  # @api private
+  PRIVATE_IP_RANGES = [
+    IPAddr.new('10.0.0.0/8'),
+    IPAddr.new('172.16.0.0/12'),
+    IPAddr.new('192.168.0.0/16'),
+    IPAddr.new('127.0.0.0/8'),
+    IPAddr.new('169.254.0.0/16'),
+    IPAddr.new('0.0.0.0/8'),
+    IPAddr.new('::1/128'),
+    IPAddr.new('fc00::/7'),
+    IPAddr.new('fe80::/10')
+  ].freeze
+
   # Fetches and caches the OpenID Connect Discovery document.
   #
   # This class retrieves the discovery metadata from an OpenID Connect provider
@@ -43,16 +60,25 @@ module Verikloak
     # @param discovery_url [String] The full URL to the `.well-known/openid-configuration`.
     # @param connection [Faraday::Connection] Optional Faraday client (for DI/tests).
     # @param cache_ttl [Integer] Cache TTL in seconds (default: 3600).
+    # @param allow_http [Boolean] When false (default), raises on plain HTTP URLs. Set true for local development only.
     # @raise [DiscoveryError] when `discovery_url` is not a valid HTTP(S) URL
-    def initialize(discovery_url:, connection: Verikloak::HTTP.default_connection, cache_ttl: 3600)
+    def initialize(discovery_url:, connection: Verikloak::HTTP.default_connection, cache_ttl: 3600, allow_http: false)
       unless discovery_url.is_a?(String) && discovery_url.strip.match?(%r{^https?://})
         raise DiscoveryError.new('Invalid discovery URL: must be a non-empty HTTP(S) URL',
                                  code: 'invalid_discovery_url')
       end
 
+      unless allow_http || discovery_url.strip.start_with?('https://')
+        raise DiscoveryError.new(
+          'Discovery URL must use HTTPS. Set allow_http: true to permit plain HTTP (development only).',
+          code: 'insecure_discovery_url'
+        )
+      end
+
       @discovery_url = discovery_url
       @conn          = connection
       @cache_ttl     = cache_ttl
+      @allow_http    = allow_http
       @cached_json   = nil
       @fetched_at    = nil
       @mutex         = Mutex.new
@@ -122,6 +148,7 @@ module Verikloak
     end
 
     # Follows HTTP redirects up to `max_hops`, resolving relative `Location` values.
+    # Validates that redirect targets do not point to private/internal networks (SSRF protection).
     # @api private
     # @param response [Faraday::Response]
     # @param max_hops [Integer]
@@ -141,6 +168,7 @@ module Verikloak
 
         location = location_from(current)
         url = absolutize_location(location, base)
+        validate_redirect_target!(url)
         current = @conn.get(url)
         base = url
         hops += 1
@@ -209,6 +237,32 @@ module Verikloak
 
       raise DiscoveryError.new("Failed to fetch discovery document: status #{response.status}",
                                code: 'discovery_metadata_fetch_failed')
+    end
+
+    # Validates that a redirect target URL does not resolve to a private/internal IP address.
+    # @api private
+    # @param url [String] The redirect target URL
+    # @raise [DiscoveryError] when the target resolves to a private IP
+    def validate_redirect_target!(url)
+      host = URI.parse(url).host
+      return unless host
+
+      addresses = Resolv.getaddresses(host)
+      addresses.each do |addr|
+        ip = IPAddr.new(addr)
+        next unless PRIVATE_IP_RANGES.any? { |range| range.include?(ip) }
+
+        raise DiscoveryError.new(
+          "Redirect target resolves to a private/internal address (#{host})",
+          code: 'discovery_redirect_error'
+        )
+      end
+    rescue URI::InvalidURIError => e
+      raise DiscoveryError.new("Invalid redirect URL: #{e.message}", code: 'discovery_redirect_error')
+    rescue IPAddr::InvalidAddressError
+      # If the address cannot be parsed, allow the request to proceed
+      # (Faraday will handle the actual connection error)
+      nil
     end
 
     # Wraps a block with network and parsing error handling and re-raising as {DiscoveryError}.

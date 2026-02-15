@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] - 2026-02-15
+
+### Security
+- **CVE-2026-25765**: Bump `faraday` runtime dependency to `>= 2.14.1`
+- **Header injection**: Sanitize CR/LF characters in `WWW-Authenticate` header values via `Verikloak::ErrorResponse`
+- **JWT size limit**: Reject tokens exceeding 8 KB (`MAX_TOKEN_BYTES = 8192`) to mitigate denial-of-service
+- **HTTPS enforcement**: `Discovery` and `JwksCache` now reject `http://` URLs unless `allow_http: true` is explicitly set
+- **SSRF protection**: Redirect targets in OIDC discovery are validated against private IP ranges (RFC 1918, loopback, link-local)
+
+### Added
+- `Verikloak::ErrorResponse` — shared RFC 6750-compliant JSON error response builder
+- `Verikloak::SkipPathMatcher` — extracted reusable skip-path matching module
+- `Verikloak::Error#http_status` attribute for structured error hierarchy
+- `allow_http:` option on `Middleware`, `Discovery`, and `JwksCache`
+
+### Changed
+- **BREAKING**: Minimum `faraday` version raised to `2.14.1`
+- **BREAKING**: Minimum `faraday-retry` version raised to `2.4.0`
+- Runtime dependency `json` added (`~> 2.18`)
+- Dev dependency `rspec` pinned to `~> 3.13`, `rubocop-rspec` pinned to `~> 3.9`, `webmock` pinned to `~> 3.26`
+
+---
+
 ## [0.3.0] - 2025-12-31
 
 ### Added

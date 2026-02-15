@@ -10,17 +10,23 @@ module Verikloak
   #
   # @attr_reader [String, Symbol, nil] code
   #   A short error code identifier suitable for programmatic handling.
+  # @attr_reader [Integer, nil] http_status
+  #   HTTP status code associated with the error (e.g. 401, 403, 500, 503).
   #
   # @example Raising with a code
   #   raise Verikloak::Error.new("Something went wrong", code: "internal_error")
+  # @example Raising with a code and HTTP status
+  #   raise Verikloak::Error.new("Forbidden", code: "forbidden", http_status: 403)
   class Error < StandardError
-    attr_reader :code
+    attr_reader :code, :http_status
 
     # @param message [String, nil] Human-readable error message.
     # @param code [String, Symbol, nil] Optional short error code for programmatic handling.
-    def initialize(message = nil, code: nil)
+    # @param http_status [Integer, nil] Optional HTTP status code.
+    def initialize(message = nil, code: nil, http_status: nil)
       super(message)
       @code = code
+      @http_status = http_status
     end
   end
 
