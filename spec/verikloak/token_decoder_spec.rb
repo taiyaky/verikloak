@@ -168,6 +168,7 @@ RSpec.describe Verikloak::TokenDecoder do
     end
 
     it "raises invalid_token when iat is in the future beyond leeway" do
+      allow(Time).to receive(:now).and_return(Time.at(now))
       token = encode(iat: now + 31) # leeway is 30
       expect { decoder.decode!(token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
         expect(e.code).to eq("invalid_token")
