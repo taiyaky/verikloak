@@ -8,7 +8,9 @@ module Verikloak
   # This class validates a JWT's signature and standard claims (`iss`, `aud`, `exp`, `nbf`, etc.)
   # using the appropriate RSA public key selected by the JWT's `kid` header.
   # Only `RS256`-signed tokens with RSA JWKs are supported.
-  # It also supports a configurable clock skew (`leeway`) to account for minor time drift.
+  # It also supports a configurable clock skew (`leeway`) to account for minor time drift,
+  # which is applied uniformly to `exp`, `nbf`, and `iat` (Verikloak applies leeway to
+  # `iat` itself because ruby-jwt 3.x's built-in `iat` validator ignores leeway).
   #
   # @example
   #   decoder = Verikloak::TokenDecoder.new(
@@ -41,7 +43,12 @@ module Verikloak
       @leeway   = leeway
       # Normalize and store verification options
       @options  = symbolize_keys(options || {})
-      @options_without_leeway = @options.except(:leeway).freeze
+      # Remove keys we manage ourselves so user-supplied values don't
+      # re-enable ruby-jwt's built-in (broken w.r.t. leeway) iat validator
+      # via the final merge in #jwt_decode_options. The user's intent for
+      # :leeway / :verify_iat is still honoured by reading from @options
+      # directly elsewhere in this class.
+      @options_for_jwt = @options.except(:leeway, :verify_iat).freeze
 
       # Build a kid-indexed hash for O(1) JWK lookup
       @jwk_by_kid = {}
@@ -118,7 +125,47 @@ module Verikloak
     # @return [Hash] Verified claims (payload).
     def decode_with_public_key(token, public_key)
       payload, = JWT.decode(token, public_key, true, jwt_decode_options)
+      verify_iat_with_leeway!(payload)
       payload
+    end
+
+    # Verifies the `iat` (issued-at) claim with the configured leeway tolerance.
+    #
+    # ruby-jwt 3.x's built-in `Claims::IssuedAt` validator does not honor the
+    # `leeway` option; it raises `JWT::InvalidIatError` whenever `iat` is even
+    # a fraction of a second in the future. In OIDC deployments the IdP
+    # (e.g. Keycloak) and the Resource Server typically run on different
+    # hosts/containers with small clock skew, so `iat` is routinely a few
+    # hundred milliseconds to a few seconds in the future relative to the
+    # Resource Server's clock. To provide behaviour consistent with `exp`
+    # and `nbf` (which honor `leeway`), Verikloak performs its own `iat`
+    # check after `JWT.decode` with the configured leeway applied.
+    #
+    # Users may opt out by passing `options: { verify_iat: false }` to the
+    # decoder, in which case this check is skipped entirely.
+    #
+    # @param payload [Hash] Decoded JWT claims.
+    # @return [void]
+    # @raise [TokenDecoderError] code: 'invalid_token' when `iat` is not
+    #   numeric or is further in the future than the allowed leeway.
+    def verify_iat_with_leeway!(payload)
+      return if @options[:verify_iat] == false
+      return unless payload.is_a?(Hash)
+
+      # Support both string- and symbol-keyed payloads. Callers may pass
+      # `options: { symbolize_names: true }` which causes JWT.decode to
+      # return symbol keys; without indifferent lookup we'd silently
+      # skip iat validation while ruby-jwt's check is disabled.
+      return unless payload.key?('iat') || payload.key?(:iat)
+
+      iat = payload.key?('iat') ? payload['iat'] : payload[:iat]
+      leeway = @options.key?(:leeway) ? @options[:leeway] : @leeway
+      leeway = leeway.to_f
+
+      return if iat.is_a?(Numeric) && iat.to_f <= Time.now.to_f + leeway
+
+      raise TokenDecoderError.new('Invalid issued-at (iat) claim',
+                                  code: 'invalid_token')
     end
 
     # Returns the verification options passed to JWT.decode.
@@ -129,6 +176,15 @@ module Verikloak
     # - Expiration (`exp`) and not-before (`nbf`) checks
     # - Clock skew tolerance via `leeway`
     #
+    # NOTE: `verify_iat` is intentionally disabled here. ruby-jwt 3.x's
+    # built-in `iat` validator ignores the `leeway` option, which causes
+    # spurious `JWT::InvalidIatError` failures whenever the IdP clock is
+    # even slightly ahead of the Resource Server's clock. Verikloak
+    # re-implements the `iat` check in {#verify_iat_with_leeway!} so the
+    # configured `leeway` is honoured consistently with `exp` and `nbf`.
+    # Users may still opt out entirely by passing
+    # `options: { verify_iat: false }` to the decoder.
+    #
     # @return [Hash]
     def jwt_decode_options
       base = {
@@ -137,15 +193,17 @@ module Verikloak
         verify_iss: true,
         aud: @audience,
         verify_aud: true,
-        verify_iat: true,
+        # See note above: handled by verify_iat_with_leeway! after decode.
+        verify_iat: false,
         verify_expiration: true,
         verify_not_before: true
       }
       # options[:leeway] overrides top-level @leeway if provided
       leeway = @options.key?(:leeway) ? @options[:leeway] : @leeway
       merged = base.merge(leeway: leeway)
-      # Merge remaining options last (excluding :leeway which is already applied)
-      extra = @options_without_leeway
+      # Merge remaining options last (excluding :leeway and :verify_iat,
+      # which Verikloak manages itself — see initializer comment).
+      extra = @options_for_jwt
       merged.merge(extra)
     end
 

@@ -168,6 +168,7 @@ RSpec.describe Verikloak::TokenDecoder do
     end
 
     it "raises invalid_token when iat is in the future beyond leeway" do
+      allow(Time).to receive(:now).and_return(Time.at(now))
       token = encode(iat: now + 31) # leeway is 30
       expect { decoder.decode!(token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
         expect(e.code).to eq("invalid_token")
@@ -194,6 +195,75 @@ RSpec.describe Verikloak::TokenDecoder do
       )
       token = encode(iat: now + 120) # far in the future
       expect(opt_decoder.decode!(token)).to be_a(Hash)
+    end
+
+    it "applies leeway to iat consistently with exp/nbf (boundary cases)" do
+      # Freeze time so the boundary checks are deterministic regardless
+      # of CI scheduling jitter (the expectation `iat == now + 31` must
+      # always evaluate against the same `Time.now` we used to encode).
+      frozen = Time.at(now)
+      allow(Time).to receive(:now).and_return(frozen)
+
+      # Top-level leeway = 30 in subject(:decoder).
+      expect(decoder.decode!(encode(iat: now + 15))).to be_a(Hash) # within leeway
+      expect(decoder.decode!(encode(iat: now + 30))).to be_a(Hash) # exactly at boundary
+      expect { decoder.decode!(encode(iat: now + 31)) }.to raise_error(Verikloak::TokenDecoderError) { |e|
+        expect(e.code).to eq("invalid_token")
+        expect(e.message).to match(/iat/i)
+      }
+    end
+
+    it "rejects non-numeric iat with invalid_token" do
+      # ruby-jwt 3.x rejects non-numeric iat at encode time, so build the
+      # token manually (header.payload.signature, base64url) to bypass it.
+      header  = { kid: "kid-1", alg: "RS256", typ: "JWT" }
+      payload = { iss: issuer, aud: audience, exp: now + 300, nbf: now - 10, iat: "abc" }
+      signing_input = [header, payload].map { |h| JWT::Base64.url_encode(h.to_json) }.join(".")
+      signature = rsa.sign(OpenSSL::Digest::SHA256.new, signing_input)
+      token = "#{signing_input}.#{JWT::Base64.url_encode(signature)}"
+
+      expect { decoder.decode!(token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
+        expect(e.code).to eq("invalid_token")
+        expect(e.message).to match(/iat/i)
+      }
+    end
+
+    it "passes when iat claim is absent" do
+      # Build a payload manually to omit iat entirely.
+      payload = { iss: issuer, aud: audience, exp: now + 300, nbf: now - 10 }
+      token = JWT.encode(payload, rsa, "RS256", { kid: "kid-1", alg: "RS256", typ: "JWT" })
+      expect(decoder.decode!(token)).to be_a(Hash)
+    end
+
+    it "ignores user-supplied verify_iat: true and still applies leeway" do
+      # Without our handling, ruby-jwt 3.x would reject any future iat regardless of leeway.
+      opt_decoder = described_class.new(
+        jwks: jwks, issuer: issuer, audience: audience, leeway: 30, options: { verify_iat: true }
+      )
+      token = encode(iat: now + 10)
+      expect(opt_decoder.decode!(token)).to be_a(Hash)
+    end
+
+    it "validates iat regardless of whether the payload uses string or symbol keys" do
+      # Some callers (or JWT.decode configurations) may produce payloads
+      # keyed by symbols rather than strings. Our iat check must locate
+      # and validate the iat claim either way.
+      opt_decoder = described_class.new(
+        jwks: jwks, issuer: issuer, audience: audience, leeway: 30
+      )
+      allow(Time).to receive(:now).and_return(Time.at(now))
+
+      string_payload = { "iat" => now + 10 }
+      symbol_payload = { iat: now + 10 }
+      expect { opt_decoder.send(:verify_iat_with_leeway!, string_payload) }.not_to raise_error
+      expect { opt_decoder.send(:verify_iat_with_leeway!, symbol_payload) }.not_to raise_error
+
+      future_string = { "iat" => now + 120 }
+      future_symbol = { iat: now + 120 }
+      expect { opt_decoder.send(:verify_iat_with_leeway!, future_string) }
+        .to raise_error(Verikloak::TokenDecoderError) { |e| expect(e.code).to eq("invalid_token") }
+      expect { opt_decoder.send(:verify_iat_with_leeway!, future_symbol) }
+        .to raise_error(Verikloak::TokenDecoderError) { |e| expect(e.code).to eq("invalid_token") }
     end
   
     it "allows expired token when verify_expiration is disabled via options" do
