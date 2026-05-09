@@ -150,9 +150,15 @@ module Verikloak
     #   numeric or is further in the future than the allowed leeway.
     def verify_iat_with_leeway!(payload)
       return if @options[:verify_iat] == false
-      return unless payload.is_a?(Hash) && payload.key?('iat')
+      return unless payload.is_a?(Hash)
 
-      iat = payload['iat']
+      # Support both string- and symbol-keyed payloads. Callers may pass
+      # `options: { symbolize_names: true }` which causes JWT.decode to
+      # return symbol keys; without indifferent lookup we'd silently
+      # skip iat validation while ruby-jwt's check is disabled.
+      return unless payload.key?('iat') || payload.key?(:iat)
+
+      iat = payload.key?('iat') ? payload['iat'] : payload[:iat]
       leeway = @options.key?(:leeway) ? @options[:leeway] : @leeway
       leeway = leeway.to_f
 

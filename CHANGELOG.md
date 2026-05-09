@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`iat` claim now honors `leeway`** (`TokenDecoder`): On ruby-jwt 3.x the built-in `Claims::IssuedAt` validator ignores the `leeway` option and raises `JWT::InvalidIatError` whenever `iat` is even a fraction of a second in the future. In typical OIDC deployments the IdP (e.g. Keycloak) and the Resource Server run on different hosts/containers, so `iat` is routinely a few hundred milliseconds to a few seconds ahead of the Resource Server's clock and the previously-effective leeway of `0` for `iat` produced spurious 401s. `TokenDecoder` now disables ruby-jwt's built-in `iat` check and performs its own `iat` validation that applies the configured `leeway` consistently with `exp` and `nbf`. Behaviour for tokens with `iat` further in the future than `leeway` is unchanged (still rejected with `invalid_token`). Pass `options: { verify_iat: false }` to skip the check entirely.
+- **`iat` validation now handles symbol-keyed payloads**: `verify_iat_with_leeway!` looks up both `'iat'` and `:iat`, so callers who request symbol-keyed payloads from `JWT.decode` still get the leeway-aware `iat` check applied.
+
+### Security
+- **Bumped `rack` to `>= 3.2.6` and `json` to `>= 2.19.5`** in `Gemfile.lock` to clear known advisories surfaced by `bundler-audit` (rack request-smuggling and json format-string injection).
 
 ---
 

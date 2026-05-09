@@ -341,7 +341,16 @@ config.middleware.use Verikloak::Middleware,
   because ruby-jwt 3.x's built-in `iat` validator ignores the `leeway`
   option; pass `token_verify_options: { verify_iat: false }` to skip the
   `iat` check entirely.
-- `token_verify_options:` is passed directly to TokenDecoder (and ultimately to `JWT.decode`).
+- `token_verify_options:` is forwarded to `TokenDecoder` (and ultimately
+  to `JWT.decode`), with the following keys handled by Verikloak rather
+  than passed through verbatim:
+  - `:leeway` — Verikloak forwards it to `JWT.decode` so it applies to
+    `exp`/`nbf`, and also uses it for its own `iat` check.
+  - `:verify_iat` — ruby-jwt's built-in `iat` validator is always
+    disabled (it ignores `:leeway` on ruby-jwt 3.x). Setting
+    `verify_iat: false` instead skips Verikloak's own `iat` check;
+    setting `verify_iat: true` (the default) keeps it enabled.
+  All other keys are forwarded to `JWT.decode` as-is.
 - If both are set, `token_verify_options[:leeway]` takes precedence.
 
 ## Performance & Caching
