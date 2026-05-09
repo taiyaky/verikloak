@@ -195,6 +195,47 @@ RSpec.describe Verikloak::TokenDecoder do
       token = encode(iat: now + 120) # far in the future
       expect(opt_decoder.decode!(token)).to be_a(Hash)
     end
+
+    it "applies leeway to iat consistently with exp/nbf (boundary cases)" do
+      # Top-level leeway = 30 in subject(:decoder).
+      expect(decoder.decode!(encode(iat: now + 15))).to be_a(Hash) # within leeway
+      expect(decoder.decode!(encode(iat: now + 30))).to be_a(Hash) # exactly at boundary
+      expect { decoder.decode!(encode(iat: now + 31)) }.to raise_error(Verikloak::TokenDecoderError) { |e|
+        expect(e.code).to eq("invalid_token")
+        expect(e.message).to match(/iat/i)
+      }
+    end
+
+    it "rejects non-numeric iat with invalid_token" do
+      # ruby-jwt 3.x rejects non-numeric iat at encode time, so build the
+      # token manually (header.payload.signature, base64url) to bypass it.
+      header  = { kid: "kid-1", alg: "RS256", typ: "JWT" }
+      payload = { iss: issuer, aud: audience, exp: now + 300, nbf: now - 10, iat: "abc" }
+      signing_input = [header, payload].map { |h| JWT::Base64.url_encode(h.to_json) }.join(".")
+      signature = rsa.sign(OpenSSL::Digest::SHA256.new, signing_input)
+      token = "#{signing_input}.#{JWT::Base64.url_encode(signature)}"
+
+      expect { decoder.decode!(token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
+        expect(e.code).to eq("invalid_token")
+        expect(e.message).to match(/iat/i)
+      }
+    end
+
+    it "passes when iat claim is absent" do
+      # Build a payload manually to omit iat entirely.
+      payload = { iss: issuer, aud: audience, exp: now + 300, nbf: now - 10 }
+      token = JWT.encode(payload, rsa, "RS256", { kid: "kid-1", alg: "RS256", typ: "JWT" })
+      expect(decoder.decode!(token)).to be_a(Hash)
+    end
+
+    it "ignores user-supplied verify_iat: true and still applies leeway" do
+      # Without our handling, ruby-jwt 3.x would reject any future iat regardless of leeway.
+      opt_decoder = described_class.new(
+        jwks: jwks, issuer: issuer, audience: audience, leeway: 30, options: { verify_iat: true }
+      )
+      token = encode(iat: now + 10)
+      expect(opt_decoder.decode!(token)).to be_a(Hash)
+    end
   
     it "allows expired token when verify_expiration is disabled via options" do
       opt_decoder = described_class.new(

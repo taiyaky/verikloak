@@ -336,7 +336,11 @@ config.middleware.use Verikloak::Middleware,
   }
 ```
 
-- `leeway:` sets the default skew tolerance in seconds.
+- `leeway:` sets the default skew tolerance in seconds. It is applied to
+  `exp`, `nbf`, and `iat`. Verikloak applies leeway to `iat` itself
+  because ruby-jwt 3.x's built-in `iat` validator ignores the `leeway`
+  option; pass `token_verify_options: { verify_iat: false }` to skip the
+  `iat` check entirely.
 - `token_verify_options:` is passed directly to TokenDecoder (and ultimately to `JWT.decode`).
 - If both are set, `token_verify_options[:leeway]` takes precedence.
 
