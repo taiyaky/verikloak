@@ -10,19 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.2] - 2026-05-09
 
 ### Fixed
-- **`iat` claim now honors `leeway`** (`TokenDecoder`): On ruby-jwt 3.x the
-  built-in `Claims::IssuedAt` validator ignores the `leeway` option and
-  raises `JWT::InvalidIatError` whenever `iat` is even a fraction of a
-  second in the future. In typical OIDC deployments the IdP (e.g. Keycloak)
-  and the Resource Server run on different hosts/containers, so `iat` is
-  routinely a few hundred milliseconds to a few seconds ahead of the
-  Resource Server's clock and the previously-effective leeway of `0` for
-  `iat` produced spurious 401s. `TokenDecoder` now disables ruby-jwt's
-  built-in `iat` check and performs its own `iat` validation that applies
-  the configured `leeway` consistently with `exp` and `nbf`. Behaviour
-  for tokens with `iat` further in the future than `leeway` is unchanged
-  (still rejected with `invalid_token`). Pass
-  `options: { verify_iat: false }` to skip the check entirely.
+- **`iat` claim now honors `leeway`** (`TokenDecoder`): On ruby-jwt 3.x the built-in `Claims::IssuedAt` validator ignores the `leeway` option and raises `JWT::InvalidIatError` whenever `iat` is even a fraction of a second in the future. In typical OIDC deployments the IdP (e.g. Keycloak) and the Resource Server run on different hosts/containers, so `iat` is routinely a few hundred milliseconds to a few seconds ahead of the Resource Server's clock and the previously-effective leeway of `0` for `iat` produced spurious 401s. `TokenDecoder` now disables ruby-jwt's built-in `iat` check and performs its own `iat` validation that applies the configured `leeway` consistently with `exp` and `nbf`. Behaviour for tokens with `iat` further in the future than `leeway` is unchanged (still rejected with `invalid_token`). Pass `options: { verify_iat: false }` to skip the check entirely.
 
 ---
 
