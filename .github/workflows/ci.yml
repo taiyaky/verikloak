@@ -34,9 +34,11 @@ jobs:
         run: docker compose build --pull
 
       - name: Run RSpec with coverage and JUnit output
+        # `-e SIMPLECOV` forwards the step-level env var into the container;
+        # compose does not pass host env vars through on its own.
         run: |
           mkdir -p tmp/coverage tmp/rspec
-          docker compose run --rm -u 0:0 dev \
+          docker compose run --rm -u 0:0 -e SIMPLECOV dev \
             bash -c "bundle exec rspec --format progress --format RspecJunitFormatter --out tmp/rspec/results.xml"
         env:
           SIMPLECOV: true
