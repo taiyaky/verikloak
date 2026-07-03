@@ -244,6 +244,42 @@ RSpec.describe Verikloak::JwksCache do
     expect(WebMock).to have_requested(:get, jwks_uri).once
   end
 
+  # A key rotation must be observable immediately even when the previous
+  # response marked the key set as fresh via Cache-Control: max-age.
+  it "force_fetch! revalidates over HTTP while TTL is still fresh" do
+    rotated_jwks = {
+      keys: [{ kty: "RSA", use: "sig", kid: "rotated-key", n: "def", e: "AQAB" }]
+    }.to_json
+
+    stub_request(:get, jwks_uri)
+      .to_return(
+        { status: 200, body: valid_jwks,
+          headers: { "ETag" => 'W/"gen1"', "Cache-Control" => "max-age=300" } },
+        { status: 200, body: rotated_jwks, headers: {} }
+      )
+
+    cache = described_class.new(jwks_uri: jwks_uri)
+    t0 = Time.now
+    allow(Time).to receive(:now).and_return(t0)
+
+    cache.fetch!
+    expect(cache.cached.first["kid"]).to eq("test-key")
+
+    allow(Time).to receive(:now).and_return(t0 + 30)
+
+    # Plain fetch! stays on the cached keys (TTL fresh, no network) ...
+    expect(cache.fetch!.first["kid"]).to eq("test-key")
+    expect(WebMock).to have_requested(:get, jwks_uri).once
+
+    # ... but force_fetch! revalidates (with the stored ETag) and picks up rotation
+    keys = cache.force_fetch!
+    expect(keys.first["kid"]).to eq("rotated-key")
+    expect(WebMock).to have_requested(:get, jwks_uri).twice
+    expect(
+      WebMock
+    ).to have_requested(:get, jwks_uri).with(headers: { "If-None-Match" => 'W/"gen1"' }).once
+  end
+
   it "serializes concurrent fetch! calls while refreshing the cache" do
     stub_request(:get, jwks_uri).to_return do
       sleep 0.1 # simulate slow network request to overlap thread scheduling

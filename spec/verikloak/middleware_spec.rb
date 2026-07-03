@@ -235,6 +235,55 @@ RSpec.describe Verikloak::Middleware do
       expect(last_response.status).to eq 200
       expect(last_request.env["verikloak.user"]).to eq({ "sub" => "user2" })
     end
+
+    it "bypasses Cache-Control TTL freshness on the retry via force_fetch!" do
+      # A max-age on the previous JWKs response must not let the retry decode
+      # against pre-rotation keys, so the forced path uses force_fetch!.
+      first_error = Verikloak::TokenDecoderError.new("Key with kid=abc not found in JWKs", code: "kid_not_found")
+      expect(decoder).to receive(:decode!).and_raise(first_error).ordered
+      expect(decoder).to receive(:decode!).and_return({ "sub" => "user2" }).ordered
+
+      expect_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).once.and_return(true)
+      expect_any_instance_of(Verikloak::JwksCache).to receive(:force_fetch!).once.and_return(true)
+
+      header "Authorization", "Bearer rotated.token"
+      get "/"
+      expect(last_response.status).to eq 200
+      expect(last_request.env["verikloak.user"]).to eq({ "sub" => "user2" })
+    end
+
+    it "falls back to plain fetch! for injected caches without force_fetch!" do
+      fetch_calls = 0
+      minimal_cache = Class.new do
+        def initialize(counter)
+          @counter = counter
+        end
+
+        def fetch!
+          @counter.call
+          [{ "kid" => "dummy" }]
+        end
+
+        def cached
+          [{ "kid" => "dummy" }]
+        end
+      end.new(-> { fetch_calls += 1 })
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        jwks_cache: minimal_cache
+      )
+
+      first_error = Verikloak::TokenDecoderError.new("Key with kid=abc not found in JWKs", code: "kid_not_found")
+      expect(decoder).to receive(:decode!).and_raise(first_error).ordered
+      expect(decoder).to receive(:decode!).and_return({ "sub" => "user2" }).ordered
+
+      request = Rack::MockRequest.new(mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer rotated.token")
+      expect(res.status).to eq 200
+      expect(fetch_calls).to eq 2
+    end
   end
 
   context "when JWKs cache is empty" do

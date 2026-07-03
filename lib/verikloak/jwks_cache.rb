@@ -75,11 +75,14 @@ module Verikloak
     # - 200: parses/validates body, updates keys, ETag, TTL and `fetched_at`.
     # - 304: keeps cached keys, updates TTL from headers (if present), refreshes `fetched_at`.
     #
+    # @param force [Boolean] When true, revalidates over HTTP even while
+    #   `Cache-Control: max-age` freshness holds (the ETag conditional request
+    #   still applies, so an unchanged key set costs only a 304).
     # @return [Array&lt;Hash&gt;] the cached JWKs after fetch/revalidation
     # @raise [JwksCacheError] on HTTP failures, invalid JSON, invalid structure, or cache miss on 304
-    def fetch!
+    def fetch!(force: false)
       @mutex.synchronize do
-        return @cached_keys if fresh_by_ttl_locked?
+        return @cached_keys if !force && fresh_by_ttl_locked?
 
         with_error_handling do
           # Build conditional request headers (ETag-based)
@@ -90,6 +93,18 @@ module Verikloak
           handle_response(response)
         end
       end
+    end
+
+    # Revalidates the JWKs over HTTP regardless of TTL freshness.
+    #
+    # Used by the middleware's key-rotation retry path: a `Cache-Control:
+    # max-age` on the previous response must not delay picking up rotated
+    # keys when a token already failed with an unknown `kid` or bad signature.
+    #
+    # @return [Array&lt;Hash&gt;] the cached JWKs after revalidation
+    # @raise [JwksCacheError] (see #fetch!)
+    def force_fetch!
+      fetch!(force: true)
     end
 
     # Returns the last cached JWKs without performing a network request.

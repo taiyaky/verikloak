@@ -41,3 +41,7 @@ Metrics/ParameterLists:
 Metrics/ClassLength:
   Max: 150               # Relax class length a bit to accommodate documentation and small helpers
   CountComments: false   # Do not count comments toward class length
+
+Metrics/ModuleLength:
+  Max: 150               # Match ClassLength: middleware mixins are extracted classes in spirit
+  CountComments: false   # Do not count comments toward module length

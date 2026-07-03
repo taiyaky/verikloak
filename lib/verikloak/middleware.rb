@@ -417,7 +417,10 @@ module Verikloak
     # * JWKs revalidation is throttled by `jwks_refresh_interval` so that hot
     #   request paths do not serialize on a network call; ETag/Cache-Control
     #   headers minimize traffic when a revalidation does happen.
-    # * `force: true` bypasses the throttle (used by the key-rotation retry path).
+    # * `force: true` bypasses the throttle **and** the cache's own
+    #   `Cache-Control: max-age` freshness (used by the key-rotation retry
+    #   path, where waiting out a TTL would keep rejecting freshly-signed
+    #   tokens).
     #
     # @param force [Boolean] Revalidate even when the throttle window is still open.
     # @return [void]
@@ -429,7 +432,7 @@ module Verikloak
         initialize_jwks_dependencies!
 
         if force || !jwks_recently_refreshed?
-          @jwks_cache.fetch!
+          refresh_jwks!(force: force)
           @last_jwks_refresh_at = monotonic_now
         end
 
@@ -457,6 +460,22 @@ module Verikloak
         # If jwks_cache was injected but no issuer configured and not yet discovered, fetch discovery to set issuer
         config = @discovery.fetch!
         @issuer = config['issuer']
+      end
+    end
+
+    # Revalidates the JWKs cache. On the forced path, prefers
+    # {JwksCache#force_fetch!} so that a `Cache-Control: max-age` from the
+    # previous response cannot short-circuit the revalidation and leave the
+    # retry decoding against pre-rotation keys. Injected caches that only
+    # implement a plain `fetch!` keep their existing behavior.
+    #
+    # @param force [Boolean]
+    # @return [void]
+    def refresh_jwks!(force: false)
+      if force && @jwks_cache.respond_to?(:force_fetch!)
+        @jwks_cache.force_fetch!
+      else
+        @jwks_cache.fetch!
       end
     end
 

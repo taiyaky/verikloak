@@ -370,8 +370,9 @@ perform a conditional HTTP GET. When a revalidation does happen, ETag/`Cache-Con
 still minimize traffic.
 
 Key rotation is not delayed by the window: when a token fails with an unknown `kid` or a bad
-signature, the middleware forces an immediate JWKs refresh and retries verification once.
-Set `jwks_refresh_interval: 0` to restore the previous revalidate-on-every-request behavior.
+signature, the middleware forces an immediate JWKs refresh — bypassing both the throttle window
+and any `Cache-Control: max-age` freshness from the previous response — and retries verification
+once. Set `jwks_refresh_interval: 0` to restore the previous revalidate-on-every-request behavior.
 
 #### Decoder cache & performance
 
