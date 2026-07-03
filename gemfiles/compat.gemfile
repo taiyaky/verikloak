@@ -1,0 +1,19 @@
+# frozen_string_literal: true
+
+# Gemfile for the CI compatibility matrix (Ruby 3.1–3.4).
+#
+# The main Gemfile pins the exact development Ruby via `ruby '3.4.8'`, which
+# would abort bundling on any other interpreter. This file carries only what
+# the test suite needs so `required_ruby_version >= 3.1` stays verifiable.
+source 'https://rubygems.org'
+
+gemspec path: '..'
+
+group :development, :test do
+  gem 'rspec', '~> 3.13'
+end
+
+group :test do
+  gem 'rack-test', '~> 2.1'
+  gem 'webmock', '~> 3.26'
+end
