@@ -8,6 +8,59 @@ require 'verikloak/http'
 require 'verikloak/safe_url'
 
 module Verikloak
+  # @api private
+  #
+  # Revalidation-policy support for {JwksCache}: forced (TTL-bypassing)
+  # refreshes and server-TTL expiry checks used by the middleware throttle.
+  # Extracted from JwksCache to keep the class within length limits.
+  module JwksCacheRevalidation
+    # Revalidates the JWKs over HTTP regardless of TTL freshness.
+    #
+    # Used by the middleware's key-rotation retry path: a `Cache-Control:
+    # max-age` on the previous response must not delay picking up rotated
+    # keys when a token already failed with an unknown `kid` or bad signature.
+    #
+    # Subclasses that override {JwksCache#fetch!} with the pre-1.1 zero-arg
+    # signature are detected via the override's parameter list and get a plain
+    # `fetch!` call instead of `fetch!(force: true)` (no TTL bypass, but no crash).
+    #
+    # @return [Array&lt;Hash&gt;] the cached JWKs after revalidation
+    # @raise [JwksCacheError] (see JwksCache#fetch!)
+    def force_fetch!
+      fetch_supports_force? ? fetch!(force: true) : fetch!
+    end
+
+    # Whether the server-declared freshness lifetime has elapsed.
+    #
+    # Returns false when the server never sent `Cache-Control: max-age`
+    # (freshness is then governed solely by the caller's own policy).
+    # Reads the two timestamps without the mutex: they are only written
+    # together under it, and a torn pair merely shifts one revalidation
+    # by a single request.
+    #
+    # @return [Boolean]
+    def ttl_expired?
+      fetched_at = @fetched_at
+      max_age = @max_age
+      fetched_at && max_age ? (Time.now - fetched_at) >= max_age : false
+    end
+
+    private
+
+    # Whether the (possibly overridden) fetch! accepts the force: keyword.
+    # Guards {#force_fetch!} against subclasses written for the pre-1.1
+    # zero-arg fetch! signature.
+    #
+    # @return [Boolean]
+    def fetch_supports_force?
+      method(:fetch!).parameters.any? do |type, name|
+        (%i[key keyreq].include?(type) && name == :force) || type == :keyrest
+      end
+    rescue NameError
+      false
+    end
+  end
+
   # Caches and revalidates JSON Web Key Sets (JWKs) fetched from a remote endpoint.
   #
   # This cache supports two HTTP cache mechanisms:
@@ -38,6 +91,8 @@ module Verikloak
   # adapters, and shared headers (kept consistent with Discovery).
   #   `JwksCache.new(jwks_uri: "...", connection: Faraday.new { |f| f.request :retry })`
   class JwksCache
+    include JwksCacheRevalidation
+
     # @param jwks_uri [String] HTTPS URL of the JWKs endpoint
     # @param connection [Faraday::Connection, nil] Optional Faraday connection for HTTP requests
     # @param allow_http [Boolean] When false (default), raises on plain HTTP URIs. Set true for local development only.
@@ -91,43 +146,6 @@ module Verikloak
           handle_response(response)
         end
       end
-    end
-
-    # Revalidates the JWKs over HTTP regardless of TTL freshness.
-    #
-    # Used by the middleware's key-rotation retry path: a `Cache-Control:
-    # max-age` on the previous response must not delay picking up rotated
-    # keys when a token already failed with an unknown `kid` or bad signature.
-    #
-    # Subclasses that override {#fetch!} with the pre-1.1 zero-arg signature
-    # are detected via the override's parameter list and get a plain `fetch!`
-    # call instead of `fetch!(force: true)` (no TTL bypass, but no crash).
-    #
-    # @return [Array&lt;Hash&gt;] the cached JWKs after revalidation
-    # @raise [JwksCacheError] (see #fetch!)
-    def force_fetch!
-      if fetch_supports_force?
-        fetch!(force: true)
-      else
-        fetch!
-      end
-    end
-
-    # Whether the server-declared freshness lifetime has elapsed.
-    #
-    # Returns false when the server never sent `Cache-Control: max-age`
-    # (freshness is then governed solely by the caller's own policy).
-    # Reads the two timestamps without the mutex: they are only written
-    # together under it, and a torn pair merely shifts one revalidation
-    # by a single request.
-    #
-    # @return [Boolean]
-    def ttl_expired?
-      fetched_at = @fetched_at
-      max_age    = @max_age
-      return false unless fetched_at && max_age
-
-      (Time.now - fetched_at) >= max_age
     end
 
     # Returns the last cached JWKs without performing a network request.
@@ -188,19 +206,6 @@ module Verikloak
     end
 
     private
-
-    # Whether the (possibly overridden) fetch! accepts the force: keyword.
-    # Guards {#force_fetch!} against subclasses written for the pre-1.1
-    # zero-arg fetch! signature.
-    #
-    # @return [Boolean]
-    def fetch_supports_force?
-      method(:fetch!).parameters.any? do |type, name|
-        (%i[key keyreq].include?(type) && name == :force) || type == :keyrest
-      end
-    rescue NameError
-      false
-    end
 
     def fresh_by_ttl_locked?
       return false unless @cached_keys && @fetched_at && @max_age

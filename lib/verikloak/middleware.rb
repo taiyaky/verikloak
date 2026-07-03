@@ -332,16 +332,9 @@ module Verikloak
 
   # @api private
   #
-  # Internal mixin for JWT verification and discovery/JWKs management.
+  # Internal mixin for JWT verification and decoder caching.
   # Extracted from Middleware to reduce class length and improve clarity.
   module MiddlewareTokenVerification
-    # Minimum seconds between failure-triggered (forced) JWKs revalidations.
-    # A token that fails against keys fetched less than this long ago would
-    # fail against an immediate re-fetch too, so skipping the round trip
-    # loses nothing — and it caps the upstream request rate an attacker can
-    # induce by flooding the middleware with unknown-`kid` tokens.
-    FORCED_REFRESH_MIN_INTERVAL = 5
-
     private
 
     # Determines whether a token verification failure warrants a one-time JWKs refresh
@@ -438,6 +431,22 @@ module Verikloak
         decoder.decode!(token)
       end
     end
+  end
+
+  # @api private
+  #
+  # Internal mixin for discovery/JWKs lifecycle: initialization, throttled and
+  # forced revalidation, and rotation detection (key-set content identity).
+  # Extracted from Middleware to reduce class length and improve clarity.
+  module MiddlewareJwksRefresh
+    # Minimum seconds between failure-triggered (forced) JWKs revalidations.
+    # A token that fails against keys fetched less than this long ago would
+    # fail against an immediate re-fetch too, so skipping the round trip
+    # loses nothing — and it caps the upstream request rate an attacker can
+    # induce by flooding the middleware with unknown-`kid` tokens.
+    FORCED_REFRESH_MIN_INTERVAL = 5
+
+    private
 
     # Ensures that discovery metadata and JWKs cache are initialized and up-to-date.
     # This method is thread-safe.
@@ -694,6 +703,7 @@ module Verikloak
     include MiddlewareAudienceResolution
     include MiddlewareDecoderCache
     include MiddlewareTokenVerification
+    include MiddlewareJwksRefresh
 
     DEFAULT_REALM = 'verikloak'
     DEFAULT_TOKEN_ENV_KEY = 'verikloak.token'
