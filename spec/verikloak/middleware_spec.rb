@@ -221,14 +221,35 @@ RSpec.describe Verikloak::Middleware do
   end
 
   context "when kid rotates and first decode fails" do
+    # Advances a fake monotonic clock so the forced-refresh rate limit
+    # (FORCED_REFRESH_MIN_INTERVAL) sees the rotation as happening after the
+    # initial revalidation, as it would in production.
+    let(:clock) { { now: 0.0 } }
+
+    def advance_clock(mw, by: 30)
+      allow(mw).to receive(:monotonic_now) { clock[:now] }
+      clock[:now] += by
+    end
+
     it "refreshes JWKs and retries once successfully" do
-      # First call to decode! fails with kid-miss, second call succeeds
+      advance_clock(middleware)
+
+      # Request 1 succeeds and closes the throttle window; request 2's decode
+      # fails with kid-miss, forcing a refresh and a successful retry.
+      expect(decoder).to receive(:decode!).and_return({ "sub" => "user1" }).ordered
       first_error = Verikloak::TokenDecoderError.new("Key with kid=abc not found in JWKs", code: "kid_not_found")
       expect(decoder).to receive(:decode!).and_raise(first_error).ordered
       expect(decoder).to receive(:decode!).and_return({ "sub" => "user2" }).ordered
 
-      # Ensure JWKs is fetched twice: initial ensure_jwks_cache! + refresh_jwks! on retry
-      expect_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).twice.and_return(true)
+      # Initial ensure_jwks_cache! + forced refresh on the retry
+      expect_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).once.and_return(true)
+      expect_any_instance_of(Verikloak::JwksCache).to receive(:force_fetch!).once.and_return(true)
+
+      header "Authorization", "Bearer first.token"
+      get "/"
+      expect(last_response.status).to eq 200
+
+      clock[:now] += 30 # rotation happens well after the last revalidation
 
       header "Authorization", "Bearer rotated.token"
       get "/"
@@ -236,20 +257,21 @@ RSpec.describe Verikloak::Middleware do
       expect(last_request.env["verikloak.user"]).to eq({ "sub" => "user2" })
     end
 
-    it "bypasses Cache-Control TTL freshness on the retry via force_fetch!" do
-      # A max-age on the previous JWKs response must not let the retry decode
-      # against pre-rotation keys, so the forced path uses force_fetch!.
+    it "rate-limits forced refreshes for tokens failing right after a revalidation" do
+      advance_clock(middleware, by: 0) # clock frozen: failure lands within FORCED_REFRESH_MIN_INTERVAL
+
       first_error = Verikloak::TokenDecoderError.new("Key with kid=abc not found in JWKs", code: "kid_not_found")
       expect(decoder).to receive(:decode!).and_raise(first_error).ordered
-      expect(decoder).to receive(:decode!).and_return({ "sub" => "user2" }).ordered
+      expect(decoder).to receive(:decode!).and_raise(first_error).ordered
 
+      # Keys were fetched microseconds ago; an immediate re-fetch cannot find
+      # a kid that fetch missed, so the forced path must not hit the network.
       expect_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).once.and_return(true)
-      expect_any_instance_of(Verikloak::JwksCache).to receive(:force_fetch!).once.and_return(true)
+      expect_any_instance_of(Verikloak::JwksCache).not_to receive(:force_fetch!)
 
-      header "Authorization", "Bearer rotated.token"
+      header "Authorization", "Bearer bogus-kid.token"
       get "/"
-      expect(last_response.status).to eq 200
-      expect(last_request.env["verikloak.user"]).to eq({ "sub" => "user2" })
+      expect(last_response.status).to eq 401
     end
 
     it "falls back to plain fetch! for injected caches without force_fetch!" do
@@ -274,12 +296,18 @@ RSpec.describe Verikloak::Middleware do
         audience: "my-client-id",
         jwks_cache: minimal_cache
       )
+      advance_clock(mw)
 
+      expect(decoder).to receive(:decode!).and_return({ "sub" => "user1" }).ordered
       first_error = Verikloak::TokenDecoderError.new("Key with kid=abc not found in JWKs", code: "kid_not_found")
       expect(decoder).to receive(:decode!).and_raise(first_error).ordered
       expect(decoder).to receive(:decode!).and_return({ "sub" => "user2" }).ordered
 
       request = Rack::MockRequest.new(mw)
+      expect(request.get("/", "HTTP_AUTHORIZATION" => "Bearer first.token").status).to eq 200
+
+      clock[:now] += 30
+
       res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer rotated.token")
       expect(res.status).to eq 200
       expect(fetch_calls).to eq 2
@@ -302,6 +330,53 @@ RSpec.describe Verikloak::Middleware do
       expect(json["error"]).to eq("jwks_cache_miss")
       expect(json["message"]).to match(/JWKs cache is empty/i)
       expect(last_response.headers).not_to have_key("WWW-Authenticate")
+    end
+  end
+
+  context "when the IdP transiently serves an empty key set" do
+    it "revalidates on the next request instead of pinning 503s for the window" do
+      keys_holder = { keys: [] }
+      fetch_calls = 0
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:cached) { keys_holder[:keys] }
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!) { fetch_calls += 1 }
+      allow(decoder).to receive(:decode!).and_return({ "sub" => "user1" })
+
+      header "Authorization", "Bearer token1"
+      get "/"
+      expect(last_response.status).to eq 503
+      expect(fetch_calls).to eq 1
+
+      # IdP recovers; an empty refresh must not have closed the throttle window
+      keys_holder[:keys] = [{ "kid" => "recovered" }]
+      header "Authorization", "Bearer token2"
+      get "/"
+      expect(last_response.status).to eq 200
+      expect(fetch_calls).to eq 2
+    end
+
+    it "returns 503 jwks_cache_miss (not 401) when a forced refresh empties the key set" do
+      clock = { now: 0.0 }
+      allow(middleware).to receive(:monotonic_now) { clock[:now] }
+      keys_holder = { keys: [{ "kid" => "old" }] }
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:cached) { keys_holder[:keys] }
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:force_fetch!) do
+        keys_holder[:keys] = []
+        true
+      end
+
+      kid_miss = Verikloak::TokenDecoderError.new("Key with kid=gone not found in JWKs", code: "kid_not_found")
+      allow(decoder).to receive(:decode!) do
+        clock[:now] += 10 # rotation-retry lands outside the forced-refresh rate limit
+        raise kid_miss
+      end
+
+      header "Authorization", "Bearer rotated.token"
+      get "/"
+      # The retry path re-checks the snapshot and reports infrastructure trouble,
+      # consistent with what every other request sees, instead of blaming the token.
+      expect(last_response.status).to eq 503
+      expect(JSON.parse(last_response.body)["error"]).to eq("jwks_cache_miss")
     end
   end
 
@@ -347,6 +422,76 @@ RSpec.describe Verikloak::Middleware do
           audience: "my-client-id",
           jwks_refresh_interval: -1)
       end.to raise_error(ArgumentError, "jwks_refresh_interval must be zero or positive")
+    end
+
+    it "falls back to the default interval when jwks_refresh_interval is nil" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        jwks_refresh_interval: nil)
+      expect(mw.instance_variable_get(:@jwks_refresh_interval))
+        .to eq(Verikloak::Middleware::DEFAULT_JWKS_REFRESH_INTERVAL)
+    end
+
+    it "coerces numeric strings for jwks_refresh_interval like decoder_cache_limit does" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        jwks_refresh_interval: "45")
+      expect(mw.instance_variable_get(:@jwks_refresh_interval)).to eq 45.0
+
+      expect do
+        described_class.new(inner_app,
+          discovery_url: "https://example.com/.well-known/openid-configuration",
+          audience: "my-client-id",
+          jwks_refresh_interval: "abc")
+      end.to raise_error(ArgumentError, "jwks_refresh_interval must be zero or positive")
+    end
+
+    it "revalidates before the interval when the server-declared max-age expires" do
+      fetch_calls = 0
+      ttl = { expired: false }
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!) { fetch_calls += 1 }
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:ttl_expired?) { ttl[:expired] }
+
+      header "Authorization", "Bearer token1"
+      get "/"
+      expect(fetch_calls).to eq 1
+
+      # Within the 60s window and TTL still fresh: served from memory
+      header "Authorization", "Bearer token2"
+      get "/"
+      expect(fetch_calls).to eq 1
+
+      # Server said max-age shorter than our window: honor it
+      ttl[:expired] = true
+      header "Authorization", "Bearer token3"
+      get "/"
+      expect(fetch_calls).to eq 2
+    end
+
+    it "builds decoders uncached and logs when the key digest cannot be computed" do
+      bad_key = Class.new do
+        def to_h
+          raise "canonicalization boom"
+        end
+      end.new
+      logger = double("Logger")
+      allow(logger).to receive(:error)
+
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        logger: logger)
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:cached).and_return([bad_key])
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
+
+      request = Rack::MockRequest.new(mw)
+      res = request.get("/", "HTTP_AUTHORIZATION" => "Bearer token1")
+
+      # Fail-safe: request still verifies (uncached decoder), failure is visible in logs
+      expect(res.status).to eq 200
+      expect(logger).to have_received(:error).with(a_string_including("JWKs digest failed")).at_least(:once)
     end
   end
 

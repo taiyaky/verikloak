@@ -247,7 +247,7 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `leeway`       | No       | Clock skew tolerance (seconds) applied during JWT verification. Defaults to `TokenDecoder::DEFAULT_LEEWAY`. |
 | `token_verify_options` | No | Hash of advanced JWT verification options passed through to TokenDecoder. For example: `{ verify_iat: false, leeway: 10 }`. If both `leeway:` and `token_verify_options[:leeway]` are set, the latter takes precedence. |
 | `decoder_cache_limit` | No | Maximum number of `TokenDecoder` instances retained per middleware. Defaults to `128`. Set to `0` to disable caching or `nil` for an unlimited cache. |
-| `jwks_refresh_interval` | No | Minimum seconds between JWKs revalidations on the request path. Defaults to `60`. Set to `0` to revalidate on every request. Key rotation within the window is still handled immediately: a signature/`kid` mismatch forces a refresh and one retry. |
+| `jwks_refresh_interval` | No | Minimum seconds between JWKs revalidations on the request path. Defaults to `60` (`nil` also means the default); numeric strings are accepted. Set to `0` to revalidate on every request. A shorter server `Cache-Control: max-age` is honored. Key rotation within the window is still handled immediately: a signature/`kid` mismatch forces a refresh and one retry (rate-limited to one forced refresh per 5s). |
 | `connection`   | No       | Inject a Faraday::Connection used for both Discovery and JWKs fetches. Defaults to a safe connection with timeouts and retries. |
 | `token_env_key` | No       | Rack env key for the raw JWT. Defaults to `verikloak.token`. |
 | `user_env_key`  | No       | Rack env key for decoded claims. Defaults to `verikloak.user`. |
@@ -367,12 +367,17 @@ on the request path. Within the window, requests use the in-memory key set witho
 lock or touching the network — important for identity providers (including Keycloak) that do
 not send `Cache-Control: max-age` on their JWKs endpoint, where every request would otherwise
 perform a conditional HTTP GET. When a revalidation does happen, ETag/`Cache-Control` headers
-still minimize traffic.
+still minimize traffic. A server-declared `max-age` **shorter** than the interval is honored:
+once it expires the next request revalidates, so a key the IdP removes stops being accepted
+after at most `min(max-age, jwks_refresh_interval)` seconds.
 
 Key rotation is not delayed by the window: when a token fails with an unknown `kid` or a bad
 signature, the middleware forces an immediate JWKs refresh — bypassing both the throttle window
 and any `Cache-Control: max-age` freshness from the previous response — and retries verification
-once. Set `jwks_refresh_interval: 0` to restore the previous revalidate-on-every-request behavior.
+once. Because that trigger is reachable with unauthenticated requests, forced refreshes are
+rate-limited to one per 5 seconds; keys fetched more recently than that cannot have missed a
+rotation, so those retries proceed on the cached keys. Set `jwks_refresh_interval: 0` to restore
+the previous revalidate-on-every-request behavior.
 
 #### Decoder cache & performance
 

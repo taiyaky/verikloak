@@ -1,9 +1,7 @@
 # frozen_string_literal: true
 
 require 'faraday'
-require 'ipaddr'
 require 'json'
-require 'resolv'
 require 'uri'
 
 require 'verikloak/http'
@@ -101,10 +99,35 @@ module Verikloak
     # max-age` on the previous response must not delay picking up rotated
     # keys when a token already failed with an unknown `kid` or bad signature.
     #
+    # Subclasses that override {#fetch!} with the pre-1.1 zero-arg signature
+    # are detected via the override's parameter list and get a plain `fetch!`
+    # call instead of `fetch!(force: true)` (no TTL bypass, but no crash).
+    #
     # @return [Array&lt;Hash&gt;] the cached JWKs after revalidation
     # @raise [JwksCacheError] (see #fetch!)
     def force_fetch!
-      fetch!(force: true)
+      if fetch_supports_force?
+        fetch!(force: true)
+      else
+        fetch!
+      end
+    end
+
+    # Whether the server-declared freshness lifetime has elapsed.
+    #
+    # Returns false when the server never sent `Cache-Control: max-age`
+    # (freshness is then governed solely by the caller's own policy).
+    # Reads the two timestamps without the mutex: they are only written
+    # together under it, and a torn pair merely shifts one revalidation
+    # by a single request.
+    #
+    # @return [Boolean]
+    def ttl_expired?
+      fetched_at = @fetched_at
+      max_age    = @max_age
+      return false unless fetched_at && max_age
+
+      (Time.now - fetched_at) >= max_age
     end
 
     # Returns the last cached JWKs without performing a network request.
@@ -165,6 +188,19 @@ module Verikloak
     end
 
     private
+
+    # Whether the (possibly overridden) fetch! accepts the force: keyword.
+    # Guards {#force_fetch!} against subclasses written for the pre-1.1
+    # zero-arg fetch! signature.
+    #
+    # @return [Boolean]
+    def fetch_supports_force?
+      method(:fetch!).parameters.any? do |type, name|
+        (%i[key keyreq].include?(type) && name == :force) || type == :keyrest
+      end
+    rescue NameError
+      false
+    end
 
     def fresh_by_ttl_locked?
       return false unless @cached_keys && @fetched_at && @max_age

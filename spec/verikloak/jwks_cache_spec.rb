@@ -244,6 +244,56 @@ RSpec.describe Verikloak::JwksCache do
     expect(WebMock).to have_requested(:get, jwks_uri).once
   end
 
+  # ttl_expired? lets callers (the middleware throttle) honor a server-declared
+  # max-age that is shorter than their own revalidation policy.
+  it "ttl_expired? tracks Cache-Control max-age and stays false without one" do
+    stub_request(:get, jwks_uri)
+      .to_return(status: 200, body: valid_jwks, headers: { "Cache-Control" => "max-age=120" })
+
+    cache = described_class.new(jwks_uri: jwks_uri)
+    expect(cache.ttl_expired?).to eq(false) # nothing fetched yet
+
+    t0 = Time.now
+    allow(Time).to receive(:now).and_return(t0)
+    cache.fetch!
+    expect(cache.ttl_expired?).to eq(false)
+
+    allow(Time).to receive(:now).and_return(t0 + 121)
+    expect(cache.ttl_expired?).to eq(true)
+
+    # Without max-age the server declared no lifetime: never "expired"
+    no_ttl_cache = described_class.new(jwks_uri: jwks_uri)
+    stub_request(:get, jwks_uri).to_return(status: 200, body: valid_jwks)
+    allow(Time).to receive(:now).and_call_original
+    no_ttl_cache.fetch!
+    expect(no_ttl_cache.ttl_expired?).to eq(false)
+  end
+
+  # Subclasses written against the pre-1.1 zero-arg fetch! signature must not
+  # crash on the forced path; they lose only the TTL bypass.
+  it "force_fetch! degrades gracefully for subclasses overriding fetch! without kwargs" do
+    subclass = Class.new(described_class) do
+      attr_reader :calls
+
+      def fetch!
+        @calls = (@calls || 0) + 1
+        super()
+      end
+    end
+
+    stub_request(:get, jwks_uri)
+      .to_return(status: 200, body: valid_jwks, headers: { "Cache-Control" => "max-age=300" })
+
+    cache = subclass.new(jwks_uri: jwks_uri)
+    cache.fetch!
+
+    expect { cache.force_fetch! }.not_to raise_error
+    expect(cache.calls).to eq 2
+    # Degraded mode: the zero-arg override cannot forward force:, so the
+    # TTL-fresh short-circuit applies and no second request is made.
+    expect(WebMock).to have_requested(:get, jwks_uri).once
+  end
+
   # A key rotation must be observable immediately even when the previous
   # response marked the key set as fresh via Cache-Control: max-age.
   it "force_fetch! revalidates over HTTP while TTL is still fresh" do

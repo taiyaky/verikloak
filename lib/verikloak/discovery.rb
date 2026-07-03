@@ -1,9 +1,7 @@
 # frozen_string_literal: true
 
 require 'faraday'
-require 'ipaddr'
 require 'json'
-require 'resolv'
 require 'uri'
 
 require 'verikloak/http'

@@ -171,17 +171,22 @@ module Verikloak
     end
 
     # Validates and normalizes the JWKs refresh interval configuration.
+    # Numeric strings are coerced (consistent with decoder_cache_limit) so
+    # ENV-driven configuration works; nil falls back to the default rather
+    # than silently disabling the throttle.
     #
-    # @param interval [Numeric, nil] Minimum seconds between JWKs revalidations.
-    # @return [Numeric] The normalized interval (nil becomes 0 = revalidate every request).
-    # @raise [ArgumentError] if the interval is negative or not numeric.
+    # @param interval [Numeric, String, nil] Minimum seconds between JWKs revalidations.
+    # @return [Numeric] The normalized interval (nil becomes the default of 60).
+    # @raise [ArgumentError] if the interval is negative or not a number.
     def normalize_jwks_refresh_interval(interval)
-      return 0 if interval.nil?
+      return Middleware::DEFAULT_JWKS_REFRESH_INTERVAL if interval.nil?
 
-      raise ArgumentError, 'jwks_refresh_interval must be zero or positive' unless interval.is_a?(Numeric)
-      raise ArgumentError, 'jwks_refresh_interval must be zero or positive' if interval.negative?
+      value = interval.is_a?(Numeric) ? interval : Float(interval)
+      raise ArgumentError, 'jwks_refresh_interval must be zero or positive' if value.negative?
 
-      interval
+      value
+    rescue ArgumentError, TypeError
+      raise ArgumentError, 'jwks_refresh_interval must be zero or positive'
     end
 
     # Validates and normalizes environment key configuration.
@@ -203,7 +208,7 @@ module Verikloak
     # @return [String] The normalized realm, or DEFAULT_REALM if nil.
     # @raise [ArgumentError] if the realm is blank after normalization.
     def normalize_realm(value)
-      return DEFAULT_REALM if value.nil?
+      return Middleware::DEFAULT_REALM if value.nil?
 
       normalized = value.to_s.strip
       raise ArgumentError, 'realm cannot be blank' if normalized.empty?
@@ -330,6 +335,13 @@ module Verikloak
   # Internal mixin for JWT verification and discovery/JWKs management.
   # Extracted from Middleware to reduce class length and improve clarity.
   module MiddlewareTokenVerification
+    # Minimum seconds between failure-triggered (forced) JWKs revalidations.
+    # A token that fails against keys fetched less than this long ago would
+    # fail against an immediate re-fetch too, so skipping the round trip
+    # loses nothing — and it caps the upstream request rate an attacker can
+    # induce by flooding the middleware with unknown-`kid` tokens.
+    FORCED_REFRESH_MIN_INTERVAL = 5
+
     private
 
     # Determines whether a token verification failure warrants a one-time JWKs refresh
@@ -341,40 +353,61 @@ module Verikloak
       error.is_a?(TokenDecoderError) && %w[invalid_signature kid_not_found].include?(error.code)
     end
 
-    # Returns a cached TokenDecoder instance for current inputs.
-    # Cache key uses issuer, audience, leeway, token_verify_options, and the
-    # current JWKs content identity (so content-identical refreshes reuse decoders).
+    # Returns a cached TokenDecoder instance built from the given key snapshot.
+    # The cache key derives from the snapshot itself, so a decoder can never be
+    # stored under a generation other than the keys it was built from (a
+    # concurrent refresh between reads previously made that pairing possible).
+    # When the digest is unavailable the decoder is built uncached — correct,
+    # just slower — rather than risking a collision under a shared key.
     #
     # @param audience [String, #call] The audience to create a decoder for
+    # @param keys [Array<Hash>] The JWKs snapshot to build the decoder from
     # @return [TokenDecoder] A decoder instance for the given audience
-    def decoder_for(audience)
-      keys = @jwks_cache.cached
-      cache_key = [
-        @issuer,
-        audience,
-        @leeway,
-        @token_verify_options,
-        decoder_cache_generation
-      ]
+    def decoder_for(audience, keys)
+      generation = keys_digest(keys)
+      return build_decoder(audience, keys) if generation.nil?
+
+      cache_key = [@issuer, audience, @leeway, @token_verify_options, generation]
       @mutex.synchronize do
         if (decoder = @decoder_cache[cache_key])
           touch_decoder_cache(cache_key) if track_decoder_order?
           return decoder
         end
 
-        decoder = TokenDecoder.new(
-          jwks: keys,
-          issuer: @issuer,
-          audience: audience,
-          leeway: @leeway,
-          options: @token_verify_options
-        )
-
+        decoder = build_decoder(audience, keys)
         return decoder if @decoder_cache_limit&.zero?
 
         prune_decoder_cache_if_needed
         store_decoder_cache(cache_key, decoder)
       end
+    end
+
+    # @param audience [String, #call]
+    # @param keys [Array<Hash>]
+    # @return [TokenDecoder]
+    def build_decoder(audience, keys)
+      TokenDecoder.new(
+        jwks: keys,
+        issuer: @issuer,
+        audience: audience,
+        leeway: @leeway,
+        options: @token_verify_options
+      )
+    end
+
+    # Reads the current key snapshot, failing as an infrastructure error when
+    # nothing usable is cached. Used on both the first attempt and the
+    # post-refresh retry so an empty key set yields the same 503 on each path.
+    #
+    # @return [Array<Hash>]
+    # @raise [MiddlewareError] code `jwks_cache_miss` when no keys are cached
+    def current_keys!
+      keys = @jwks_cache.cached
+      if keys.nil? || keys.empty?
+        raise MiddlewareError.new('JWKs cache is empty, cannot verify token', code: 'jwks_cache_miss')
+      end
+
+      keys
     end
 
     # Decodes and verifies the JWT using the cached JWKs. On certain verification
@@ -386,15 +419,10 @@ module Verikloak
     # @raise [Verikloak::Error] bubbles up verification/fetch errors for centralized handling
     def decode_token(env, token)
       ensure_jwks_cache!
-      keys = @jwks_cache.cached
-      if keys.nil? || keys.empty?
-        raise MiddlewareError.new('JWKs cache is empty, cannot verify token', code: 'jwks_cache_miss')
-      end
-
+      keys = current_keys!
       audience = resolve_audience(env)
 
-      # First attempt
-      decoder = decoder_for(audience)
+      decoder = decoder_for(audience, keys)
 
       begin
         decoder.decode!(token)
@@ -404,8 +432,9 @@ module Verikloak
 
         ensure_jwks_cache!(force: true)
 
-        # Rebuild decoder with refreshed keys and try once more.
-        decoder = decoder_for(audience)
+        # Re-snapshot and rebuild: the refresh may have rotated or emptied the keys.
+        keys = current_keys!
+        decoder = decoder_for(audience, keys)
         decoder.decode!(token)
       end
     end
@@ -416,11 +445,13 @@ module Verikloak
     # * When the cache instance is missing, it is created from discovery metadata.
     # * JWKs revalidation is throttled by `jwks_refresh_interval` so that hot
     #   request paths do not serialize on a network call; ETag/Cache-Control
-    #   headers minimize traffic when a revalidation does happen.
-    # * `force: true` bypasses the throttle **and** the cache's own
-    #   `Cache-Control: max-age` freshness (used by the key-rotation retry
-    #   path, where waiting out a TTL would keep rejecting freshly-signed
-    #   tokens).
+    #   headers minimize traffic when a revalidation does happen. A server
+    #   `Cache-Control: max-age` shorter than the interval is honored: TTL
+    #   expiry reopens the window early (see {#jwks_recently_refreshed?}).
+    # * `force: true` bypasses the throttle **and** the cache's own max-age
+    #   freshness (used by the key-rotation retry path), rate-limited to one
+    #   revalidation per {FORCED_REFRESH_MIN_INTERVAL} seconds because the
+    #   trigger is attacker-controllable (any token with an unknown `kid`).
     #
     # @param force [Boolean] Revalidate even when the throttle window is still open.
     # @return [void]
@@ -431,18 +462,40 @@ module Verikloak
       @mutex.synchronize do
         initialize_jwks_dependencies!
 
-        if force || !jwks_recently_refreshed?
+        if force ? forced_refresh_allowed? : !jwks_recently_refreshed?
           refresh_jwks!(force: force)
-          @last_jwks_refresh_at = monotonic_now
+          record_refresh!
         end
-
-        purge_decoder_cache_if_keys_changed
       end
     rescue Verikloak::DiscoveryError, Verikloak::JwksCacheError => e
       # Re-raise so that specific error codes can be mapped in the middleware
       raise e
     rescue StandardError => e
       raise MiddlewareError.new("Failed to initialize JWKs cache: #{e.message}", code: 'jwks_fetch_failed')
+    end
+
+    # Records the outcome of a revalidation. Must be called while holding `@mutex`.
+    #
+    # An empty key set does not close the throttle window: leaving
+    # `@last_jwks_refresh_at` unset lets the very next request revalidate, so a
+    # transient `{"keys": []}` from the IdP heals on recovery instead of
+    # pinning 503s for the rest of the window.
+    #
+    # @return [void]
+    def record_refresh!
+      keys = @jwks_cache.respond_to?(:cached) ? @jwks_cache.cached : nil
+      purge_decoder_cache_if_keys_changed(keys)
+      @last_jwks_refresh_at = monotonic_now unless keys.nil? || keys.empty?
+    end
+
+    # Whether a failure-triggered refresh may hit the network. Keys revalidated
+    # within {FORCED_REFRESH_MIN_INTERVAL} seconds cannot have missed a rotation
+    # an immediate re-fetch would find, so the retry proceeds on cached keys.
+    #
+    # @return [Boolean]
+    def forced_refresh_allowed?
+      last = @last_jwks_refresh_at
+      last.nil? || (monotonic_now - last) >= FORCED_REFRESH_MIN_INTERVAL
     end
 
     # Creates the JWKs cache from discovery metadata and resolves the effective
@@ -480,55 +533,71 @@ module Verikloak
     end
 
     # Whether the JWKs were revalidated within the configured refresh interval.
+    # `@last_jwks_refresh_at` is only stamped after a successful non-empty
+    # refresh inside the mutex, so a non-nil value implies the dependencies are
+    # initialized. A server-declared `Cache-Control: max-age` that expires
+    # before the interval reopens the window early, so an IdP asking for
+    # faster revalidation than the throttle default still gets it.
     # Reads shared state without the mutex; a stale read only causes an extra
     # (harmless) pass through the synchronized slow path.
     #
     # @return [Boolean]
     def jwks_recently_refreshed?
       return false unless @jwks_refresh_interval.positive?
-      return false if @issuer.nil? || @jwks_cache.nil? || @last_cached_keys_id.nil?
 
       last = @last_jwks_refresh_at
-      !last.nil? && (monotonic_now - last) < @jwks_refresh_interval
+      return false if last.nil?
+      return false if @jwks_cache.respond_to?(:ttl_expired?) && @jwks_cache.ttl_expired?
+
+      (monotonic_now - last) < @jwks_refresh_interval
     end
 
     # Purges the decoder cache if the JWKs have changed since last check.
     # Compares key set content identity to detect key rotation and invalidate
-    # cached decoders.
+    # cached decoders. When the digest cannot be computed for a present key
+    # set, the cache is cleared as the safe default (a rotation cannot be
+    # ruled out) and {#decoder_for} runs uncached until digests succeed again.
     #
+    # @param keys [Array<Hash>, nil] The key snapshot taken after the refresh
     # @return [void]
-    def purge_decoder_cache_if_keys_changed
-      current_id = cached_keys_identity(@jwks_cache)
-      clear_decoder_cache if @last_cached_keys_id && current_id && @last_cached_keys_id != current_id
+    def purge_decoder_cache_if_keys_changed(keys)
+      current_id = keys_digest(keys)
+      if current_id.nil?
+        clear_decoder_cache if keys
+      elsif @last_cached_keys_id && @last_cached_keys_id != current_id
+        clear_decoder_cache
+      end
 
-      @last_cached_keys_id = current_id if current_id
+      @last_cached_keys_id = current_id
     end
 
-    # Cache-key component tying decoders to the JWKs content they were built from.
-    # Falls back to the fetch timestamp when the content digest is unavailable.
+    # Content digest of a key snapshot, stable across refreshes that return
+    # identical keys (unlike object identity). The last (snapshot, digest)
+    # pair is memoized behind a single frozen reference, so the request path
+    # pays one `equal?` check while the cache keeps returning the same array
+    # object (TTL-fresh reads and 304 revalidations do). Failures are logged
+    # and yield nil — callers then skip decoder caching rather than risk
+    # keying different key sets identically.
     #
-    # @return [String, Time, nil]
-    def decoder_cache_generation
-      @last_cached_keys_id || (@jwks_cache.respond_to?(:fetched_at) ? @jwks_cache.fetched_at : nil)
-    end
+    # @param keys [Array<Hash>, nil]
+    # @return [String, nil]
+    def keys_digest(keys)
+      return nil if keys.nil?
 
-    # Generates a content-based identity for the current JWKs set, stable across
-    # refreshes that return identical keys (unlike object identity).
-    #
-    # @param cache [JwksCache] The JWKs cache instance
-    # @return [String, nil] A digest representing the current key set, or nil
-    #   when unavailable
-    def cached_keys_identity(cache)
-      return unless cache.respond_to?(:cached)
-
-      keys = cache.cached
-      return unless keys
+      memo = @keys_digest_memo
+      return memo[1] if memo && keys.equal?(memo[0])
 
       canonical = Array(keys).map do |key|
         key.respond_to?(:to_h) ? key.to_h.transform_keys(&:to_s).sort.inspect : key.inspect
       end
-      Digest::SHA256.hexdigest(canonical.inspect)
-    rescue StandardError
+      digest = Digest::SHA256.hexdigest(canonical.inspect)
+      @keys_digest_memo = [keys, digest].freeze
+      digest
+    rescue StandardError => e
+      if logger_available?
+        log_message(@logger, "[verikloak] JWKs digest failed (#{e.class}: #{e.message}); " \
+                             'decoder caching disabled for this key set')
+      end
       nil
     end
   end
@@ -689,6 +758,7 @@ module Verikloak
       @decoder_cache = {}
       @decoder_cache_order = []
       @last_cached_keys_id = nil
+      @keys_digest_memo = nil
       @token_env_key = normalize_env_key(token_env_key, 'token_env_key')
       @user_env_key  = normalize_env_key(user_env_key, 'user_env_key')
       @realm         = normalize_realm(realm)
