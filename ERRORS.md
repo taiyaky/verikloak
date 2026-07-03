@@ -38,7 +38,7 @@ Raised during JWT verification (`Verikloak::TokenDecoder`).
 |------------------------|-------------------------------------------------------------|----------------|
 | `unsupported_algorithm`| `Missing or unsupported algorithm`                          | JWT header `alg` is not `RS256` or missing |
 | `invalid_token`        | `JWT header missing 'kid'`                                  | JWT header has no `kid` |
-| `invalid_token`        | `Key with kid=<kid> not found in JWKs`                      | No matching JWK by `kid` |
+| `kid_not_found`        | `Key with kid=<kid> not found in JWKs`                      | No matching JWK by `kid` (the middleware refreshes JWKs and retries once, then renders the response as `invalid_token`; long `kid` values are truncated to 64 characters in the message) |
 | `invalid_token`        | `Unsupported key type '<kty>'. Only RSA is supported`       | Non-RSA JWK |
 | `invalid_token`        | `Failed to import JWK: <detail>`                            | RSA key import failed |
 | `expired_token`        | `Token has expired`                                         | `JWT::ExpiredSignature` |
@@ -64,6 +64,8 @@ Errors raised during fetching or parsing of the OIDC discovery document or JWKs 
 | `discovery_redirect_error`    | `Redirect without Location header`, `Too many redirects (max 3)`, `Redirect Location is invalid: ...`, or `Redirect target resolves to a private/internal address (<host>)` |
 | `insecure_discovery_url`      | `Discovery URL must use HTTPS. Set allow_http: true to permit plain HTTP (development only).` |
 | `insecure_jwks_uri`           | `JWKs URI must use HTTPS. Set allow_http: true to permit plain HTTP (development only).` |
+| `discovery_metadata_invalid`  | `Discovery response exceeds maximum allowed size` (body larger than 1 MB) |
+| `jwks_parse_failed`           | `JWKs response exceeds maximum allowed size` (body larger than 1 MB) |
 
 ---
 

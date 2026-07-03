@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-07-03
+
+### Changed
+- **JWKs revalidation is now throttled on the request path** (`Middleware`): previously every request synchronized on a single mutex and called `JwksCache#fetch!`, so identity providers that do not send `Cache-Control: max-age` on their JWKs endpoint (including Keycloak's default) caused a conditional HTTP GET — with retries and timeouts — inside the lock on **every** request. The middleware now revalidates at most once per `jwks_refresh_interval` seconds (default `60`) and serves requests within the window lock-free from the in-memory key set. Key rotation is not delayed: an unknown `kid` or signature mismatch forces an immediate refresh and one retry, exactly as before. Pass `jwks_refresh_interval: 0` to restore the previous revalidate-on-every-request behavior.
+- **Decoder cache is now keyed and invalidated by JWKs content** (`Middleware`): rotation detection previously compared the cached key array's object identity (`__id__`), so any `200 OK` refresh — even one returning identical keys — purged all cached `TokenDecoder` instances and rebuilt them, and object-id recycling could in principle miss a rotation. The cache key and the purge check now use a SHA-256 digest of the key set content, so content-identical refreshes keep the cache warm and rotations are detected reliably.
+- **`kid_not_found` error code** (`TokenDecoder`): an unknown `kid` now raises `TokenDecoderError` with code `kid_not_found` instead of `invalid_token`, and the middleware's refresh-and-retry trigger matches on that code instead of sniffing the error message. HTTP responses are unchanged (still `401` with JSON `error: "invalid_token"`); only `error.code` seen by callers rescuing `Verikloak::TokenDecoderError` directly changes.
+
+### Security
+- **Response size limits**: discovery and JWKs response bodies larger than 1 MB (`Verikloak::HTTP::MAX_RESPONSE_BYTES`) are rejected (`discovery_metadata_invalid` / `jwks_parse_failed`) before JSON parsing, preventing a compromised endpoint from exhausting memory.
+- **`kid` truncation in error messages** (`TokenDecoder`): the attacker-controlled `kid` value echoed in "Key with kid=... not found" messages (and therefore in 401 response bodies and `WWW-Authenticate` headers) is truncated to 64 characters.
+- **DNS rebinding limitation documented** (SECURITY.md): the SSRF checks resolve hostnames at validation time while the HTTP client resolves them again at connection time; the gap and recommended mitigations are now documented.
+
+### Added
+- **`jwks_refresh_interval` middleware option** (default `60`): minimum seconds between JWKs revalidations on the request path.
+- **`Verikloak::SafeUrl`** (internal): shared URL normalization, HTTPS-enforcement, and private-IP resolution helpers previously duplicated between `Discovery` and `JwksCache`. `Verikloak::PRIVATE_IP_RANGES` is unchanged and now lives alongside it.
+- **CI compatibility matrix**: the suite now also runs on Ruby 3.1, 3.2, and 3.3 (via `gemfiles/compat.gemfile`), backing the gemspec's `required_ruby_version >= 3.1` claim; the docker-based job continues to cover 3.4.
+- **Coverage gate**: SimpleCov now runs in CI (`SIMPLECOV=true`) and fails the suite below 90% line coverage (currently ~95%).
+
+### Fixed
+- **Audience callable arity fallback no longer swallows application errors**: the retry-on-`ArgumentError` fallback now only matches messages *starting with* `wrong number of arguments`, so an `ArgumentError` raised inside the callable body that merely mentions the phrase propagates instead of triggering a second invocation.
+- **README**: removed the misleading `algorithms:` override example — the token header is validated to be exactly `RS256` before decoding regardless of that option; documented the constraint instead.
+
+---
+
 ## [1.0.2] - 2026-05-09
 
 ### Fixed

@@ -21,8 +21,10 @@ Verikloak is a plug-and-play solution for Ruby (especially Rails API) apps that 
 - SSRF protection — discovery redirect targets **and** `jwks_uri` values validated against private IP ranges (including IPv4-mapped IPv6 normalisation); automatically bypassed with `allow_http: true` for local development
 - HTTPS redirect enforcement — redirect targets are scheme-checked to prevent HTTPS→HTTP downgrade
 - JWT size limit (8 KB) to mitigate denial-of-service via oversized tokens
+- Response size limit (1 MB) for discovery and JWKs documents
 - Header injection prevention in `WWW-Authenticate` responses
 - URL normalisation — leading/trailing whitespace stripped from discovery and JWKs URLs
+- Throttled JWKs revalidation (`jwks_refresh_interval`, default 60s) so hot request paths never serialize on network calls; key rotation is still picked up immediately via refresh-and-retry
 
 ## Installation
 
@@ -243,8 +245,9 @@ For a full list of error cases and detailed explanations, please see the [ERRORS
 | `discovery`     | No       | Inject custom Discovery instance (advanced/testing) |
 | `jwks_cache`    | No       | Inject custom JwksCache instance (advanced/testing) |
 | `leeway`       | No       | Clock skew tolerance (seconds) applied during JWT verification. Defaults to `TokenDecoder::DEFAULT_LEEWAY`. |
-| `token_verify_options` | No | Hash of advanced JWT verification options passed through to TokenDecoder. For example: `{ verify_iat: false, leeway: 10, algorithms: ["RS256"] }`. If both `leeway:` and `token_verify_options[:leeway]` are set, the latter takes precedence. |
+| `token_verify_options` | No | Hash of advanced JWT verification options passed through to TokenDecoder. For example: `{ verify_iat: false, leeway: 10 }`. If both `leeway:` and `token_verify_options[:leeway]` are set, the latter takes precedence. |
 | `decoder_cache_limit` | No | Maximum number of `TokenDecoder` instances retained per middleware. Defaults to `128`. Set to `0` to disable caching or `nil` for an unlimited cache. |
+| `jwks_refresh_interval` | No | Minimum seconds between JWKs revalidations on the request path. Defaults to `60`. Set to `0` to revalidate on every request. Key rotation within the window is still handled immediately: a signature/`kid` mismatch forces a refresh and one retry. |
 | `connection`   | No       | Inject a Faraday::Connection used for both Discovery and JWKs fetches. Defaults to a safe connection with timeouts and retries. |
 | `token_env_key` | No       | Rack env key for the raw JWT. Defaults to `verikloak.token`. |
 | `user_env_key`  | No       | Rack env key for decoded claims. Defaults to `verikloak.user`. |
@@ -331,8 +334,7 @@ config.middleware.use Verikloak::Middleware,
     verify_iat: true,
     verify_expiration: true,
     verify_not_before: true,
-    # algorithms: ["RS256"] # override algorithms if needed
-    # leeway: 10            # this overrides the top-level leeway
+    # leeway: 10 # this overrides the top-level leeway
   }
 ```
 
@@ -352,15 +354,33 @@ config.middleware.use Verikloak::Middleware,
     setting `verify_iat: true` (the default) keeps it enabled.
   All other keys are forwarded to `JWT.decode` as-is.
 - If both are set, `token_verify_options[:leeway]` takes precedence.
+- Note that `algorithms:` cannot be used to accept anything other than
+  `RS256`: the token header is validated to be exactly `RS256` before
+  decoding, regardless of this option.
 
 ## Performance & Caching
 
+#### JWKs revalidation throttling
+
+The middleware revalidates JWKs at most once per `jwks_refresh_interval` seconds (default 60)
+on the request path. Within the window, requests use the in-memory key set without taking a
+lock or touching the network — important for identity providers (including Keycloak) that do
+not send `Cache-Control: max-age` on their JWKs endpoint, where every request would otherwise
+perform a conditional HTTP GET. When a revalidation does happen, ETag/`Cache-Control` headers
+still minimize traffic.
+
+Key rotation is not delayed by the window: when a token fails with an unknown `kid` or a bad
+signature, the middleware forces an immediate JWKs refresh and retries verification once.
+Set `jwks_refresh_interval: 0` to restore the previous revalidate-on-every-request behavior.
+
 #### Decoder cache & performance
 
-Internally, Verikloak caches `TokenDecoder` instances per JWKs fetch to avoid reinitializing
-them on every request. The cache behaves like an LRU with a configurable size (`decoder_cache_limit`)
-so long-running processes do not accumulate decoders for one-off audiences. When the underlying
-JWK set rotates, the middleware now clears the cache to drop decoders that point at stale keys.
+Internally, Verikloak caches `TokenDecoder` instances keyed by the JWKs content to avoid
+reinitializing them on every request. The cache behaves like an LRU with a configurable size
+(`decoder_cache_limit`) so long-running processes do not accumulate decoders for one-off
+audiences. When the underlying JWK set rotates (detected by content, so refreshes that return
+identical keys keep the cache warm), the middleware clears the cache to drop decoders that
+point at stale keys.
 
 Set `decoder_cache_limit` to `0` if you prefer to construct a fresh decoder every time, or `nil`
 when you want the cache to grow without bounds (e.g., in short-lived jobs).
