@@ -581,12 +581,14 @@ module Verikloak
     end
 
     # Content digest of a key snapshot, stable across refreshes that return
-    # identical keys (unlike object identity). The last (snapshot, digest)
-    # pair is memoized behind a single frozen reference, so the request path
-    # pays one `equal?` check while the cache keeps returning the same array
-    # object (TTL-fresh reads and 304 revalidations do). Failures are logged
-    # and yield nil — callers then skip decoder caching rather than risk
-    # keying different key sets identically.
+    # the same key set (unlike object identity) — both attribute order within
+    # a JWK and the order of keys in the array are canonicalized, since kid
+    # lookup makes ordering irrelevant to verification. The last
+    # (snapshot, digest) pair is memoized behind a single frozen reference, so
+    # the request path pays one `equal?` check while the cache keeps returning
+    # the same array object (TTL-fresh reads and 304 revalidations do).
+    # Failures are logged and yield nil — callers then skip decoder caching
+    # rather than risk keying different key sets identically.
     #
     # @param keys [Array<Hash>, nil]
     # @return [String, nil]
@@ -599,7 +601,7 @@ module Verikloak
       canonical = Array(keys).map do |key|
         key.respond_to?(:to_h) ? key.to_h.transform_keys(&:to_s).sort.inspect : key.inspect
       end
-      digest = Digest::SHA256.hexdigest(canonical.inspect)
+      digest = Digest::SHA256.hexdigest(canonical.sort.inspect)
       @keys_digest_memo = [keys, digest].freeze
       digest
     rescue StandardError => e

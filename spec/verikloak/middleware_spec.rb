@@ -583,6 +583,31 @@ RSpec.describe Verikloak::Middleware do
       res2 = request.get("/", "HTTP_AUTHORIZATION" => "Bearer tokenB")
       expect(res2.status).to eq 200
     end
+
+    it "reuses TokenDecoder when a refresh returns the same keys in a different order" do
+      mw = described_class.new(inner_app,
+        discovery_url: "https://example.com/.well-known/openid-configuration",
+        audience: "my-client-id",
+        jwks_refresh_interval: 0
+      )
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:fetch!).and_return(true)
+      # Same key set, reordered between fetches (e.g. differing IdP nodes):
+      # kid lookup makes order irrelevant, so the decoder cache must stay warm
+      key_a = { "kid" => "a" }
+      key_b = { "kid" => "b" }
+      responses = [[key_a, key_b], [key_b, key_a]]
+      calls = 0
+      allow_any_instance_of(Verikloak::JwksCache).to receive(:cached) do
+        calls += 1
+        responses[[calls - 1, 1].min].dup
+      end
+
+      expect(Verikloak::TokenDecoder).to receive(:new).once.and_return(decoder)
+
+      request = Rack::MockRequest.new(mw)
+      expect(request.get("/", "HTTP_AUTHORIZATION" => "Bearer tokenA").status).to eq 200
+      expect(request.get("/", "HTTP_AUTHORIZATION" => "Bearer tokenB").status).to eq 200
+    end
   end
   
   context "connection injection to JWKs cache" do
