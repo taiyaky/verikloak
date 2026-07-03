@@ -47,6 +47,22 @@ RSpec.describe Verikloak::Discovery do
     end
   end
 
+  # Scenario: The HTTP response body exceeds the maximum allowed size
+  context "when response body exceeds the size limit" do
+    before do
+      oversized = "a" * (Verikloak::HTTP::MAX_RESPONSE_BYTES + 1)
+      stub_request(:get, discovery_url).to_return(status: 200, body: oversized)
+    end
+
+    it "raises discovery_metadata_invalid" do
+      expect {
+        described_class.new(discovery_url: discovery_url).fetch!
+      }.to raise_error(Verikloak::DiscoveryError, /maximum allowed size/) { |e|
+        expect(e.code).to eq("discovery_metadata_invalid")
+      }
+    end
+  end
+
   # Scenario: The HTTP response is successful but contains invalid JSON
   context "when response is not valid JSON" do
     # Stub a successful HTTP response with a non-JSON body

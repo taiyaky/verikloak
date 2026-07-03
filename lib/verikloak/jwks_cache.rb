@@ -1,14 +1,66 @@
 # frozen_string_literal: true
 
 require 'faraday'
-require 'ipaddr'
 require 'json'
-require 'resolv'
 require 'uri'
 
 require 'verikloak/http'
+require 'verikloak/safe_url'
 
 module Verikloak
+  # @api private
+  #
+  # Revalidation-policy support for {JwksCache}: forced (TTL-bypassing)
+  # refreshes and server-TTL expiry checks used by the middleware throttle.
+  # Extracted from JwksCache to keep the class within length limits.
+  module JwksCacheRevalidation
+    # Revalidates the JWKs over HTTP regardless of TTL freshness.
+    #
+    # Used by the middleware's key-rotation retry path: a `Cache-Control:
+    # max-age` on the previous response must not delay picking up rotated
+    # keys when a token already failed with an unknown `kid` or bad signature.
+    #
+    # Subclasses that override {JwksCache#fetch!} with the pre-1.1 zero-arg
+    # signature are detected via the override's parameter list and get a plain
+    # `fetch!` call instead of `fetch!(force: true)` (no TTL bypass, but no crash).
+    #
+    # @return [Array&lt;Hash&gt;] the cached JWKs after revalidation
+    # @raise [JwksCacheError] (see JwksCache#fetch!)
+    def force_fetch!
+      fetch_supports_force? ? fetch!(force: true) : fetch!
+    end
+
+    # Whether the server-declared freshness lifetime has elapsed.
+    #
+    # Returns false when the server never sent `Cache-Control: max-age`
+    # (freshness is then governed solely by the caller's own policy).
+    # Reads the two timestamps without the mutex: they are only written
+    # together under it, and a torn pair merely shifts one revalidation
+    # by a single request.
+    #
+    # @return [Boolean]
+    def ttl_expired?
+      fetched_at = @fetched_at
+      max_age = @max_age
+      fetched_at && max_age ? (Time.now - fetched_at) >= max_age : false
+    end
+
+    private
+
+    # Whether the (possibly overridden) fetch! accepts the force: keyword.
+    # Guards {#force_fetch!} against subclasses written for the pre-1.1
+    # zero-arg fetch! signature.
+    #
+    # @return [Boolean]
+    def fetch_supports_force?
+      method(:fetch!).parameters.any? do |type, name|
+        (%i[key keyreq].include?(type) && name == :force) || type == :keyrest
+      end
+    rescue NameError
+      false
+    end
+  end
+
   # Caches and revalidates JSON Web Key Sets (JWKs) fetched from a remote endpoint.
   #
   # This cache supports two HTTP cache mechanisms:
@@ -39,22 +91,20 @@ module Verikloak
   # adapters, and shared headers (kept consistent with Discovery).
   #   `JwksCache.new(jwks_uri: "...", connection: Faraday.new { |f| f.request :retry })`
   class JwksCache
+    include JwksCacheRevalidation
+
     # @param jwks_uri [String] HTTPS URL of the JWKs endpoint
     # @param connection [Faraday::Connection, nil] Optional Faraday connection for HTTP requests
     # @param allow_http [Boolean] When false (default), raises on plain HTTP URIs. Set true for local development only.
     # @raise [JwksCacheError] if the URI is not an HTTP(S) URL or resolves to a private/internal address
     def initialize(jwks_uri:, connection: nil, allow_http: false)
-      unless jwks_uri.is_a?(String)
+      clean_jwks_uri = SafeUrl.normalize(jwks_uri)
+
+      unless clean_jwks_uri
         raise JwksCacheError.new('Invalid JWKs URI: must be a non-empty HTTP(S) URL', code: 'jwks_fetch_failed')
       end
 
-      clean_jwks_uri = jwks_uri.strip
-
-      unless clean_jwks_uri.match?(%r{^https?://})
-        raise JwksCacheError.new('Invalid JWKs URI: must be a non-empty HTTP(S) URL', code: 'jwks_fetch_failed')
-      end
-
-      unless allow_http || clean_jwks_uri.start_with?('https://')
+      if SafeUrl.insecure_http?(clean_jwks_uri, allow_http: allow_http)
         raise JwksCacheError.new(
           'JWKs URI must use HTTPS. Set allow_http: true to permit plain HTTP (development only).',
           code: 'insecure_jwks_uri'
@@ -78,11 +128,14 @@ module Verikloak
     # - 200: parses/validates body, updates keys, ETag, TTL and `fetched_at`.
     # - 304: keeps cached keys, updates TTL from headers (if present), refreshes `fetched_at`.
     #
+    # @param force [Boolean] When true, revalidates over HTTP even while
+    #   `Cache-Control: max-age` freshness holds (the ETag conditional request
+    #   still applies, so an unchanged key set costs only a 304).
     # @return [Array&lt;Hash&gt;] the cached JWKs after fetch/revalidation
     # @raise [JwksCacheError] on HTTP failures, invalid JSON, invalid structure, or cache miss on 304
-    def fetch!
+    def fetch!(force: false)
       @mutex.synchronize do
-        return @cached_keys if fresh_by_ttl_locked?
+        return @cached_keys if !force && fresh_by_ttl_locked?
 
         with_error_handling do
           # Build conditional request headers (ETag-based)
@@ -170,32 +223,21 @@ module Verikloak
     # compromised or malicious discovery endpoint to point JWKs fetching at internal services.
     #
     # IPv4-mapped IPv6 addresses (e.g. `::ffff:127.0.0.1`) are normalised to their native IPv4
-    # form before comparison, consistent with {Verikloak::Discovery}.
+    # form before comparison (see {SafeUrl}).
     #
     # @api private
     # @param url [String] The JWKs URI to validate
     # @raise [JwksCacheError] when the URI resolves to a private/internal address
     def validate_not_private!(url)
-      uri = URI.parse(url)
-      host = uri.host
-      return unless host
+      host = URI.parse(url).host
+      return unless SafeUrl.resolves_to_private_ip?(host)
 
-      Resolv.getaddresses(host).each do |addr|
-        ip = IPAddr.new(addr)
-        ip = ip.native if ip.ipv4_mapped?
-        next unless Verikloak::PRIVATE_IP_RANGES.any? { |range| range.include?(ip) }
-
-        raise JwksCacheError.new(
-          "JWKs URI resolves to a private/internal address (#{host})",
-          code: 'jwks_ssrf_blocked'
-        )
-      end
+      raise JwksCacheError.new(
+        "JWKs URI resolves to a private/internal address (#{host})",
+        code: 'jwks_ssrf_blocked'
+      )
     rescue URI::InvalidURIError => e
       raise JwksCacheError.new("Invalid JWKs URI: #{e.message}", code: 'jwks_fetch_failed')
-    rescue IPAddr::InvalidAddressError
-      # If the address cannot be parsed, allow the request to proceed
-      # (Faraday will handle the actual connection error)
-      nil
     end
 
     # @api private
@@ -294,7 +336,12 @@ module Verikloak
     # @param response [Faraday::Response]
     # @return [Array&lt;Hash&gt;] parsed and cached keys
     def process_successful_response(response)
-      json = parse_json!(response.body)
+      body = response.body.to_s
+      if body.bytesize > Verikloak::HTTP::MAX_RESPONSE_BYTES
+        raise JwksCacheError.new('JWKs response exceeds maximum allowed size', code: 'jwks_parse_failed')
+      end
+
+      json = parse_json!(body)
       keys = extract_and_validate_keys!(json)
       update_cache_from_ok(response, keys)
       keys

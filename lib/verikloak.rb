@@ -6,6 +6,7 @@
 require 'verikloak/version'
 require 'verikloak/errors'
 require 'verikloak/http'
+require 'verikloak/safe_url'
 require 'verikloak/discovery'
 require 'verikloak/jwks_cache'
 require 'verikloak/token_decoder'

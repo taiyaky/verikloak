@@ -1,29 +1,13 @@
 # frozen_string_literal: true
 
 require 'faraday'
-require 'ipaddr'
 require 'json'
-require 'resolv'
 require 'uri'
 
 require 'verikloak/http'
+require 'verikloak/safe_url'
 
 module Verikloak
-  # Private IP ranges that must not be targets of redirects (SSRF protection).
-  # Includes RFC 1918, loopback, link-local, and IPv6 equivalents.
-  # @api private
-  PRIVATE_IP_RANGES = [
-    IPAddr.new('10.0.0.0/8'),
-    IPAddr.new('172.16.0.0/12'),
-    IPAddr.new('192.168.0.0/16'),
-    IPAddr.new('127.0.0.0/8'),
-    IPAddr.new('169.254.0.0/16'),
-    IPAddr.new('0.0.0.0/8'),
-    IPAddr.new('::1/128'),
-    IPAddr.new('fc00::/7'),
-    IPAddr.new('fe80::/10')
-  ].freeze
-
   # Fetches and caches the OpenID Connect Discovery document.
   #
   # This class retrieves the discovery metadata from an OpenID Connect provider
@@ -63,14 +47,14 @@ module Verikloak
     # @param allow_http [Boolean] When false (default), raises on plain HTTP URLs. Set true for local development only.
     # @raise [DiscoveryError] when `discovery_url` is not a valid HTTP(S) URL
     def initialize(discovery_url:, connection: Verikloak::HTTP.default_connection, cache_ttl: 3600, allow_http: false)
-      normalized_url = discovery_url.is_a?(String) ? discovery_url.strip : discovery_url
+      normalized_url = SafeUrl.normalize(discovery_url)
 
-      unless normalized_url.is_a?(String) && normalized_url.match?(%r{^https?://})
+      unless normalized_url
         raise DiscoveryError.new('Invalid discovery URL: must be a non-empty HTTP(S) URL',
                                  code: 'invalid_discovery_url')
       end
 
-      unless allow_http || normalized_url.start_with?('https://')
+      if SafeUrl.insecure_http?(normalized_url, allow_http: allow_http)
         raise DiscoveryError.new(
           'Discovery URL must use HTTPS. Set allow_http: true to permit plain HTTP (development only).',
           code: 'insecure_discovery_url'
@@ -126,7 +110,15 @@ module Verikloak
     # @return [Hash]
     # @raise [DiscoveryError]
     def handle_final_response(response)
-      return parse_json(response.body) if response.status == 200
+      if response.status == 200
+        body = response.body.to_s
+        if body.bytesize > Verikloak::HTTP::MAX_RESPONSE_BYTES
+          raise DiscoveryError.new('Discovery response exceeds maximum allowed size',
+                                   code: 'discovery_metadata_invalid')
+        end
+
+        return parse_json(body)
+      end
 
       raise DiscoveryError.new(failure_message(response), code: 'discovery_metadata_fetch_failed')
     end
@@ -266,31 +258,19 @@ module Verikloak
     end
 
     # Validates that the redirect target does not resolve to a private/internal IP.
-    # IPv4-mapped IPv6 addresses are normalised before comparison.
+    # IPv4-mapped IPv6 addresses are normalised before comparison (see {SafeUrl}).
     # Skipped when `@allow_http` is true (development mode).
     # @api private
     # @param uri [URI] Parsed redirect target
     # @raise [DiscoveryError]
     def validate_redirect_not_private!(uri)
       return if @allow_http
+      return unless SafeUrl.resolves_to_private_ip?(uri.host)
 
-      host = uri.host
-      return unless host
-
-      Resolv.getaddresses(host).each do |addr|
-        ip = IPAddr.new(addr)
-        ip = ip.native if ip.ipv4_mapped?
-        next unless PRIVATE_IP_RANGES.any? { |range| range.include?(ip) }
-
-        raise DiscoveryError.new(
-          "Redirect target resolves to a private/internal address (#{host})",
-          code: 'discovery_redirect_error'
-        )
-      end
-    rescue IPAddr::InvalidAddressError
-      # If the address cannot be parsed, allow the request to proceed
-      # (Faraday will handle the actual connection error)
-      nil
+      raise DiscoveryError.new(
+        "Redirect target resolves to a private/internal address (#{uri.host})",
+        code: 'discovery_redirect_error'
+      )
     end
 
     # Wraps a block with network and parsing error handling and re-raising as {DiscoveryError}.

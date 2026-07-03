@@ -53,6 +53,17 @@ RSpec.describe Verikloak::JwksCache do
     expect(keys).to eq(cache.cached)
   end
 
+  # Test error when JWKs response exceeds the maximum allowed size
+  it "raises jwks_parse_failed when response body exceeds the size limit" do
+    oversized = "a" * (Verikloak::HTTP::MAX_RESPONSE_BYTES + 1)
+    stub_request(:get, jwks_uri).to_return(status: 200, body: oversized)
+
+    cache = described_class.new(jwks_uri: jwks_uri)
+    expect { cache.fetch! }.to raise_error(Verikloak::JwksCacheError, /maximum allowed size/) { |e|
+      expect(e.code).to eq("jwks_parse_failed")
+    }
+  end
+
   # Test error raised when JWKs response is not valid JSON
   it "raises error when JWKs response is not valid JSON" do
     # Stub HTTP GET to return invalid JSON body
@@ -231,6 +242,92 @@ RSpec.describe Verikloak::JwksCache do
 
     expect(cache.fetch!).to eq(cache.cached)
     expect(WebMock).to have_requested(:get, jwks_uri).once
+  end
+
+  # ttl_expired? lets callers (the middleware throttle) honor a server-declared
+  # max-age that is shorter than their own revalidation policy.
+  it "ttl_expired? tracks Cache-Control max-age and stays false without one" do
+    stub_request(:get, jwks_uri)
+      .to_return(status: 200, body: valid_jwks, headers: { "Cache-Control" => "max-age=120" })
+
+    cache = described_class.new(jwks_uri: jwks_uri)
+    expect(cache.ttl_expired?).to eq(false) # nothing fetched yet
+
+    t0 = Time.now
+    allow(Time).to receive(:now).and_return(t0)
+    cache.fetch!
+    expect(cache.ttl_expired?).to eq(false)
+
+    allow(Time).to receive(:now).and_return(t0 + 121)
+    expect(cache.ttl_expired?).to eq(true)
+
+    # Without max-age the server declared no lifetime: never "expired"
+    no_ttl_cache = described_class.new(jwks_uri: jwks_uri)
+    stub_request(:get, jwks_uri).to_return(status: 200, body: valid_jwks)
+    allow(Time).to receive(:now).and_call_original
+    no_ttl_cache.fetch!
+    expect(no_ttl_cache.ttl_expired?).to eq(false)
+  end
+
+  # Subclasses written against the pre-1.1 zero-arg fetch! signature must not
+  # crash on the forced path; they lose only the TTL bypass.
+  it "force_fetch! degrades gracefully for subclasses overriding fetch! without kwargs" do
+    subclass = Class.new(described_class) do
+      attr_reader :calls
+
+      def fetch!
+        @calls = (@calls || 0) + 1
+        super()
+      end
+    end
+
+    stub_request(:get, jwks_uri)
+      .to_return(status: 200, body: valid_jwks, headers: { "Cache-Control" => "max-age=300" })
+
+    cache = subclass.new(jwks_uri: jwks_uri)
+    cache.fetch!
+
+    expect { cache.force_fetch! }.not_to raise_error
+    expect(cache.calls).to eq 2
+    # Degraded mode: the zero-arg override cannot forward force:, so the
+    # TTL-fresh short-circuit applies and no second request is made.
+    expect(WebMock).to have_requested(:get, jwks_uri).once
+  end
+
+  # A key rotation must be observable immediately even when the previous
+  # response marked the key set as fresh via Cache-Control: max-age.
+  it "force_fetch! revalidates over HTTP while TTL is still fresh" do
+    rotated_jwks = {
+      keys: [{ kty: "RSA", use: "sig", kid: "rotated-key", n: "def", e: "AQAB" }]
+    }.to_json
+
+    stub_request(:get, jwks_uri)
+      .to_return(
+        { status: 200, body: valid_jwks,
+          headers: { "ETag" => 'W/"gen1"', "Cache-Control" => "max-age=300" } },
+        { status: 200, body: rotated_jwks, headers: {} }
+      )
+
+    cache = described_class.new(jwks_uri: jwks_uri)
+    t0 = Time.now
+    allow(Time).to receive(:now).and_return(t0)
+
+    cache.fetch!
+    expect(cache.cached.first["kid"]).to eq("test-key")
+
+    allow(Time).to receive(:now).and_return(t0 + 30)
+
+    # Plain fetch! stays on the cached keys (TTL fresh, no network) ...
+    expect(cache.fetch!.first["kid"]).to eq("test-key")
+    expect(WebMock).to have_requested(:get, jwks_uri).once
+
+    # ... but force_fetch! revalidates (with the stored ETag) and picks up rotation
+    keys = cache.force_fetch!
+    expect(keys.first["kid"]).to eq("rotated-key")
+    expect(WebMock).to have_requested(:get, jwks_uri).twice
+    expect(
+      WebMock
+    ).to have_requested(:get, jwks_uri).with(headers: { "If-None-Match" => 'W/"gen1"' }).once
   end
 
   it "serializes concurrent fetch! calls while refreshing the cache" do

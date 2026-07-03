@@ -26,6 +26,10 @@ module Verikloak
     # Default clock skew tolerance in seconds.
     DEFAULT_LEEWAY = 60
 
+    # Maximum length of an attacker-controlled `kid` value echoed back in
+    # error messages (and ultimately in 401 response bodies/headers).
+    MAX_KID_LENGTH_IN_MESSAGE = 64
+
     # Initializes the decoder with a JWKs and verification criteria.
     #
     # @param jwks     [Array<Hash>] List of JWKs from the discovery document.
@@ -65,6 +69,7 @@ module Verikloak
     # @return [Hash] The decoded payload (claims).
     # @raise [TokenDecoderError] If verification fails. Possible error codes:
     #   - invalid_token
+    #   - kid_not_found
     #   - expired_token
     #   - not_yet_valid
     #   - invalid_issuer
@@ -108,14 +113,24 @@ module Verikloak
     #
     # @param header [Hash]
     # @return [Hash] The matching JWK.
-    # @raise [TokenDecoderError] If key not found or unsupported type.
+    # @raise [TokenDecoderError] code: 'kid_not_found' when no JWK matches.
     def find_key_by_kid(header)
       kid = fetch_indifferent(header, 'kid')
       jwk = @jwk_by_kid[kid]
 
-      raise TokenDecoderError.new("Key with kid=#{kid} not found in JWKs", code: 'invalid_token') unless jwk
+      unless jwk
+        raise TokenDecoderError.new("Key with kid=#{truncate_kid(kid)} not found in JWKs", code: 'kid_not_found')
+      end
 
       jwk
+    end
+
+    # Truncates an untrusted `kid` value for safe inclusion in error messages.
+    #
+    # @param kid [Object]
+    # @return [String]
+    def truncate_kid(kid)
+      kid.to_s.then { |s| s.length > MAX_KID_LENGTH_IN_MESSAGE ? "#{s[0, MAX_KID_LENGTH_IN_MESSAGE]}..." : s }
     end
 
     # Decodes and verifies the token using the given public key and decode options.
@@ -243,7 +258,7 @@ module Verikloak
     def fetch_indifferent(hash, key)
       return nil unless hash.is_a?(Hash)
 
-      hash[key] || hash[key.to_s] || hash[key.to_sym]
+      hash[key.to_s] || hash[key.to_sym]
     end
 
     # Wraps decoding logic with structured error handling.
