@@ -11,6 +11,11 @@ module Verikloak
     # Default open/read timeout (seconds) before establishing the HTTP connection.
     DEFAULT_OPEN_TIMEOUT = 2
 
+    # Maximum accepted response body size (bytes) for discovery and JWKs
+    # documents. Real-world documents are a few KB; the cap guards against a
+    # compromised endpoint exhausting memory with an oversized response.
+    MAX_RESPONSE_BYTES = 1_048_576
+
     # Retry middleware configuration used for idempotent GET requests.
     # Retries on 429/5xx with exponential backoff and jitter.
     RETRY_OPTIONS = {

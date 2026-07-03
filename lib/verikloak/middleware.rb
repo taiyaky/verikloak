@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'rack'
+require 'digest'
 require 'json'
 require 'set'
 require 'faraday'
@@ -67,11 +68,13 @@ module Verikloak
     end
 
     # Returns true when the ArgumentError message indicates a wrong arity.
+    # Anchored to the start of the message so ArgumentErrors raised inside the
+    # callable body that merely mention the phrase are not swallowed.
     #
     # @param error [ArgumentError]
     # @return [Boolean]
     def wrong_arity_error?(error)
-      error.message.include?('wrong number of arguments')
+      error.message.start_with?('wrong number of arguments')
     end
 
     # Extracts parameter information from a callable's call method.
@@ -167,6 +170,20 @@ module Verikloak
       raise ArgumentError, 'decoder_cache_limit must be zero or positive'
     end
 
+    # Validates and normalizes the JWKs refresh interval configuration.
+    #
+    # @param interval [Numeric, nil] Minimum seconds between JWKs revalidations.
+    # @return [Numeric] The normalized interval (nil becomes 0 = revalidate every request).
+    # @raise [ArgumentError] if the interval is negative or not numeric.
+    def normalize_jwks_refresh_interval(interval)
+      return 0 if interval.nil?
+
+      raise ArgumentError, 'jwks_refresh_interval must be zero or positive' unless interval.is_a?(Numeric)
+      raise ArgumentError, 'jwks_refresh_interval must be zero or positive' if interval.negative?
+
+      interval
+    end
+
     # Validates and normalizes environment key configuration.
     #
     # @param value [String, #to_s] The environment key to normalize.
@@ -201,6 +218,11 @@ module Verikloak
       return false unless @logger
 
       @logger.respond_to?(:error) || @logger.respond_to?(:warn) || @logger.respond_to?(:debug)
+    end
+
+    # @return [Float] Monotonic clock reading in seconds.
+    def monotonic_now
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     # Logs a message and backtrace using the configured logger.
@@ -316,28 +338,24 @@ module Verikloak
     # @param error [Exception]
     # @return [Boolean]
     def retryable_decoder_error?(error)
-      return false unless error.is_a?(TokenDecoderError)
-      return true if error.code == 'invalid_signature'
-      return true if error.code == 'invalid_token' && error.message&.include?('Key with kid=')
-
-      false
+      error.is_a?(TokenDecoderError) && %w[invalid_signature kid_not_found].include?(error.code)
     end
 
     # Returns a cached TokenDecoder instance for current inputs.
-    # Cache key uses issuer, audience, leeway, token_verify_options, and JWKs fetched_at timestamp.
+    # Cache key uses issuer, audience, leeway, token_verify_options, and the
+    # current JWKs content identity (so content-identical refreshes reuse decoders).
     #
     # @param audience [String, #call] The audience to create a decoder for
     # @return [TokenDecoder] A decoder instance for the given audience
     def decoder_for(audience)
       keys = @jwks_cache.cached
-      fetched_at = @jwks_cache.respond_to?(:fetched_at) ? @jwks_cache.fetched_at : nil
       cache_key = [
         @issuer,
         audience,
         @leeway,
         @token_verify_options,
-        fetched_at
-      ].hash
+        decoder_cache_generation
+      ]
       @mutex.synchronize do
         if (decoder = @decoder_cache[cache_key])
           touch_decoder_cache(cache_key) if track_decoder_order?
@@ -359,15 +377,6 @@ module Verikloak
       end
     end
 
-    # Ensures JWKs are up-to-date by invoking {#ensure_jwks_cache!}.
-    # Errors are not swallowed and are handled by the caller.
-    #
-    # @return [void]
-    # @raise [Verikloak::DiscoveryError, Verikloak::JwksCacheError]
-    def refresh_jwks!
-      ensure_jwks_cache!
-    end
-
     # Decodes and verifies the JWT using the cached JWKs. On certain verification
     # failures (e.g., key rotation), it refreshes the JWKs and retries once.
     #
@@ -377,7 +386,8 @@ module Verikloak
     # @raise [Verikloak::Error] bubbles up verification/fetch errors for centralized handling
     def decode_token(env, token)
       ensure_jwks_cache!
-      if @jwks_cache.cached.nil? || @jwks_cache.cached.empty?
+      keys = @jwks_cache.cached
+      if keys.nil? || keys.empty?
         raise MiddlewareError.new('JWKs cache is empty, cannot verify token', code: 'jwks_cache_miss')
       end
 
@@ -392,7 +402,7 @@ module Verikloak
         # On key rotation or signature mismatch, refresh JWKs and retry once.
         raise unless retryable_decoder_error?(e)
 
-        refresh_jwks!
+        ensure_jwks_cache!(force: true)
 
         # Rebuild decoder with refreshed keys and try once more.
         decoder = decoder_for(audience)
@@ -404,27 +414,26 @@ module Verikloak
     # This method is thread-safe.
     #
     # * When the cache instance is missing, it is created from discovery metadata.
-    # * JWKs are (re)fetched every time; ETag/Cache-Control headers minimize traffic.
+    # * JWKs revalidation is throttled by `jwks_refresh_interval` so that hot
+    #   request paths do not serialize on a network call; ETag/Cache-Control
+    #   headers minimize traffic when a revalidation does happen.
+    # * `force: true` bypasses the throttle (used by the key-rotation retry path).
     #
+    # @param force [Boolean] Revalidate even when the throttle window is still open.
     # @return [void]
     # @raise [Verikloak::DiscoveryError, Verikloak::JwksCacheError, Verikloak::MiddlewareError]
-    def ensure_jwks_cache!
+    def ensure_jwks_cache!(force: false)
+      return if !force && jwks_recently_refreshed?
+
       @mutex.synchronize do
-        previous_keys_id = cached_keys_identity(@jwks_cache)
-        if @jwks_cache.nil?
-          config   = @discovery.fetch!
-          # Use configured issuer if provided, otherwise use discovered issuer
-          @issuer  = @configured_issuer || config['issuer']
-          jwks_uri = config['jwks_uri']
-          @jwks_cache = JwksCache.new(jwks_uri: jwks_uri, connection: @connection, allow_http: @allow_http)
-        elsif @configured_issuer.nil? && @issuer.nil?
-          # If jwks_cache was injected but no issuer configured and not yet discovered, fetch discovery to set issuer
-          config = @discovery.fetch!
-          @issuer = config['issuer']
+        initialize_jwks_dependencies!
+
+        if force || !jwks_recently_refreshed?
+          @jwks_cache.fetch!
+          @last_jwks_refresh_at = monotonic_now
         end
 
-        @jwks_cache.fetch!
-        purge_decoder_cache_if_keys_changed(previous_keys_id)
+        purge_decoder_cache_if_keys_changed
       end
     rescue Verikloak::DiscoveryError, Verikloak::JwksCacheError => e
       # Re-raise so that specific error codes can be mapped in the middleware
@@ -433,31 +442,75 @@ module Verikloak
       raise MiddlewareError.new("Failed to initialize JWKs cache: #{e.message}", code: 'jwks_fetch_failed')
     end
 
-    # Purges the decoder cache if the JWKs have changed since last check.
-    # Compares key set identity to detect key rotation and invalidate cached decoders.
+    # Creates the JWKs cache from discovery metadata and resolves the effective
+    # issuer. Must be called while holding `@mutex`.
     #
-    # @param previous_keys_id [String, nil] The previous JWKs identity hash
     # @return [void]
-    def purge_decoder_cache_if_keys_changed(previous_keys_id)
-      current_id = cached_keys_identity(@jwks_cache)
-      if (@last_cached_keys_id && current_id && @last_cached_keys_id != current_id) ||
-         (previous_keys_id && current_id && previous_keys_id != current_id)
-        clear_decoder_cache
+    def initialize_jwks_dependencies!
+      if @jwks_cache.nil?
+        config   = @discovery.fetch!
+        # Use configured issuer if provided, otherwise use discovered issuer
+        @issuer  = @configured_issuer || config['issuer']
+        jwks_uri = config['jwks_uri']
+        @jwks_cache = JwksCache.new(jwks_uri: jwks_uri, connection: @connection, allow_http: @allow_http)
+      elsif @configured_issuer.nil? && @issuer.nil?
+        # If jwks_cache was injected but no issuer configured and not yet discovered, fetch discovery to set issuer
+        config = @discovery.fetch!
+        @issuer = config['issuer']
       end
+    end
+
+    # Whether the JWKs were revalidated within the configured refresh interval.
+    # Reads shared state without the mutex; a stale read only causes an extra
+    # (harmless) pass through the synchronized slow path.
+    #
+    # @return [Boolean]
+    def jwks_recently_refreshed?
+      return false unless @jwks_refresh_interval.positive?
+      return false if @issuer.nil? || @jwks_cache.nil? || @last_cached_keys_id.nil?
+
+      last = @last_jwks_refresh_at
+      !last.nil? && (monotonic_now - last) < @jwks_refresh_interval
+    end
+
+    # Purges the decoder cache if the JWKs have changed since last check.
+    # Compares key set content identity to detect key rotation and invalidate
+    # cached decoders.
+    #
+    # @return [void]
+    def purge_decoder_cache_if_keys_changed
+      current_id = cached_keys_identity(@jwks_cache)
+      clear_decoder_cache if @last_cached_keys_id && current_id && @last_cached_keys_id != current_id
 
       @last_cached_keys_id = current_id if current_id
     end
 
-    # Generates a unique identity hash for the current JWKs set.
-    # Used to detect changes in the key set for cache invalidation.
+    # Cache-key component tying decoders to the JWKs content they were built from.
+    # Falls back to the fetch timestamp when the content digest is unavailable.
+    #
+    # @return [String, Time, nil]
+    def decoder_cache_generation
+      @last_cached_keys_id || (@jwks_cache.respond_to?(:fetched_at) ? @jwks_cache.fetched_at : nil)
+    end
+
+    # Generates a content-based identity for the current JWKs set, stable across
+    # refreshes that return identical keys (unlike object identity).
     #
     # @param cache [JwksCache] The JWKs cache instance
-    # @return [String, nil] A hash representing the current key set identity
+    # @return [String, nil] A digest representing the current key set, or nil
+    #   when unavailable
     def cached_keys_identity(cache)
       return unless cache.respond_to?(:cached)
 
       keys = cache.cached
-      keys&.__id__
+      return unless keys
+
+      canonical = Array(keys).map do |key|
+        key.respond_to?(:to_h) ? key.to_h.transform_keys(&:to_s).sort.inspect : key.inspect
+      end
+      Digest::SHA256.hexdigest(canonical.inspect)
+    rescue StandardError
+      nil
     end
   end
 
@@ -572,8 +625,13 @@ module Verikloak
     # @param token_verify_options [Hash] Additional JWT verification options passed through
     #   to TokenDecoder.
     #   e.g., { verify_iat: false, leeway: 10 }
+    # @param jwks_refresh_interval [Numeric] Minimum seconds between JWKs
+    #   revalidations on the request path. Set to `0` to revalidate on every
+    #   request (pre-1.1 behavior). Key rotation within the window is still
+    #   handled: a signature/kid mismatch forces an immediate refresh and retry.
     # rubocop:disable Metrics/ParameterLists
     DEFAULT_DECODER_CACHE_LIMIT = 128
+    DEFAULT_JWKS_REFRESH_INTERVAL = 60
 
     def initialize(app,
                    discovery_url:,
@@ -586,6 +644,7 @@ module Verikloak
                    leeway: Verikloak::TokenDecoder::DEFAULT_LEEWAY,
                    token_verify_options: {},
                    decoder_cache_limit: DEFAULT_DECODER_CACHE_LIMIT,
+                   jwks_refresh_interval: DEFAULT_JWKS_REFRESH_INTERVAL,
                    token_env_key: DEFAULT_TOKEN_ENV_KEY,
                    user_env_key: DEFAULT_USER_ENV_KEY,
                    realm: DEFAULT_REALM,
@@ -601,6 +660,8 @@ module Verikloak
       @leeway = leeway
       @token_verify_options = token_verify_options || {}
       @decoder_cache_limit = normalize_decoder_cache_limit(decoder_cache_limit)
+      @jwks_refresh_interval = normalize_jwks_refresh_interval(jwks_refresh_interval)
+      @last_jwks_refresh_at = nil
       # Optional user-configured issuer (overrides discovery issuer when provided)
       @configured_issuer = issuer
       # Effective issuer; may be nil initially and set via discovery if not configured

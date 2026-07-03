@@ -53,6 +53,17 @@ RSpec.describe Verikloak::JwksCache do
     expect(keys).to eq(cache.cached)
   end
 
+  # Test error when JWKs response exceeds the maximum allowed size
+  it "raises jwks_parse_failed when response body exceeds the size limit" do
+    oversized = "a" * (Verikloak::HTTP::MAX_RESPONSE_BYTES + 1)
+    stub_request(:get, jwks_uri).to_return(status: 200, body: oversized)
+
+    cache = described_class.new(jwks_uri: jwks_uri)
+    expect { cache.fetch! }.to raise_error(Verikloak::JwksCacheError, /maximum allowed size/) { |e|
+      expect(e.code).to eq("jwks_parse_failed")
+    }
+  end
+
   # Test error raised when JWKs response is not valid JSON
   it "raises error when JWKs response is not valid JSON" do
     # Stub HTTP GET to return invalid JSON body

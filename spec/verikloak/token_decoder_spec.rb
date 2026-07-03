@@ -67,11 +67,21 @@ RSpec.describe Verikloak::TokenDecoder do
       }
     end
 
-    it "raises invalid_token when kid is not found in JWKs" do
+    it "raises kid_not_found when kid is not found in JWKs" do
       token = encode({}, { kid: "unknown" })
       expect { decoder.decode!(token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
-        expect(e.code).to eq("invalid_token")
+        expect(e.code).to eq("kid_not_found")
         expect(e.message).to match(/not found in JWKs/)
+      }
+    end
+
+    it "truncates an oversized kid in the error message" do
+      long_kid = "k" * 200
+      token = encode({}, { kid: long_kid })
+      expect { decoder.decode!(token) }.to raise_error(Verikloak::TokenDecoderError) { |e|
+        expect(e.code).to eq("kid_not_found")
+        expect(e.message).to include("#{'k' * 64}...")
+        expect(e.message).not_to include("k" * 65)
       }
     end
 
